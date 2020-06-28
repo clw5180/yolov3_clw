@@ -233,6 +233,7 @@ def get_yolo_layers(model):
 
 
 def create_grids(self, img_size=416, ng=(13, 13), device='cpu', type=torch.float32):
+    assert (ng[0] == ng[1])  # clw note: now only support square picture
     nx, ny = ng  # x and y grid size
     self.img_size = max(img_size)
     self.stride = self.img_size / max(ng)
@@ -244,7 +245,7 @@ def create_grids(self, img_size=416, ng=(13, 13), device='cpu', type=torch.float
     # build wh gains
     self.anchor_vec = self.anchors.to(device) / self.stride
     self.anchor_wh = self.anchor_vec.view(1, self.na, 1, 1, 2).to(device).type(type)
-    self.ng = torch.Tensor(ng).to(device)
+    self.ng = torch.IntTensor(ng).to(device)
     self.nx = nx
     self.ny = ny
 
