@@ -91,7 +91,7 @@ def train():
     if weights.endswith('.pt'):
 
         ### model.load_state_dict(torch.load(weights)['model']) # 错误原因：没有考虑类别对不上的那一层，也就是yolo_layer前一层
-                                                                #          会报错size mismatch for module_list.81.Conv2d.weight: copying a param with shape torch.Size([255, 1024, 1, 1]) from checkpoint, the shape in current model is torch.Size([75, 1024, 1, 1]).
+                                                                #          会报错size mismatch for module_list.81.Conv2d.weight: copying a param with shape torch.size([255, 1024, 1, 1]) from checkpoint, the shape in current model is torch.Size([75, 1024, 1, 1]).
                                                                #           TODO：map_location=device ？
         chkpt = torch.load(weights, map_location=device)
         try:

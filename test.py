@@ -53,7 +53,7 @@ def test(cfg,
     dataloader = DataLoader(valid_dataset,
                             batch_size=batch_size,
                             shuffle=False,
-                            num_workers=4,    # TODO
+                            num_workers=8,    # TODO
                             collate_fn=valid_dataset.train_collate_fn,   # TODO
                             pin_memory=True)
 
@@ -189,7 +189,7 @@ if __name__ == '__main__':
     #parser.add_argument('--cfg', type=str, default='cfg/yolov3-spp.cfg', help='xxx.cfg file path')
     parser.add_argument('--data', type=str, default='cfg/voc.data', help='xxx.data file path')
     parser.add_argument('--batch-size', type=int, default=64)
-    parser.add_argument('--device', type=str, default='0', help='device id (i.e. 0 or 0,1,2,3) ') # 默认单卡
+    parser.add_argument('--device', type=str, default='0,1', help='device id (i.e. 0 or 0,1,2,3) ') # 默认单卡
     parser.add_argument('--src-txt-path', type=str, default='./valid.txt', help='saved img_file_paths list')
     parser.add_argument('--dst-path', type=str, default='./output', help='save detect result in this folder')
     parser.add_argument('--weights', type=str, default='weights/last.pt', help='path to weights file')

@@ -137,8 +137,8 @@ def create_modules(module_defs):
             routs.extend([i + layer if layer < 0 else layer])
 
         elif mdef['type'] == 'reorg3d':  # yolov3-spp-pan-scale
-            # torch.Size([16, 128, 104, 104])
-            # torch.Size([16, 64, 208, 208]) <-- # stride 2 interpolate dimensions 2 and 3 to cat with prior layer
+            # torch.size([16, 128, 104, 104])
+            # torch.size([16, 64, 208, 208]) <-- # stride 2 interpolate dimensions 2 and 3 to cat with prior layer
             pass
 
         elif mdef['type'] == 'yolo':
