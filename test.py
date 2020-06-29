@@ -49,7 +49,7 @@ def test(cfg,
     model.to(device).eval()
 
     # 2、加载数据集
-    valid_dataset = VocDataset(src_txt_path, img_size, with_label=True)
+    valid_dataset = VocDataset(src_txt_path, img_size, with_label=True, is_training=False)
     dataloader = DataLoader(valid_dataset,
                             batch_size=batch_size,
                             shuffle=False,

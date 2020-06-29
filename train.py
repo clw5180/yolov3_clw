@@ -18,7 +18,7 @@
 import torch
 import numpy as np
 import cv2
-from utils import cosine_lr_scheduler
+from utils import custom_lr_scheduler
 
 # Set printoptions
 # torch.set_printoptions(linewidth=320, precision=5, profile='long')
@@ -44,14 +44,17 @@ import test
 import torch.nn as nn
 import torch.distributed as dist  #   clw note: TODO
 from torch.utils.tensorboard import SummaryWriter
+from utils.globals import *
+from utils.custom_lr_scheduler import adjust_learning_rate
 import math
 
 ### 超参数
-lr0 = 1e-3
+lr0 = 3e-3
 momentum = 0.9
-weight_decay = 0.0005
+weight_decay = 5e-4
 ###
 
+os.makedirs(log_folder, exist_ok=True)
 
 ### 混合精度训练 ###
 mixed_precision = True
@@ -64,12 +67,7 @@ if mixed_precision:
     print('Using Apex !!! ')
 ######
 
-### 模型、日志保存路径
-last_model_path = './weights/last.pt'
-log_folder = 'log'
-os.makedirs(log_folder, exist_ok=True)
-log_file_path = os.path.join(log_folder , 'log_{}.txt'.format(time.strftime("%Y%m%d_%H%M%S", time.localtime())))
-###
+
 
 
 if __name__ == '__main__':
@@ -116,8 +114,8 @@ if __name__ == '__main__':
     nc = int(data['classes'])
 
     # 0、打印配置文件信息，写log等
-    print('clw: config file:', cfg)
-    print('clw: pretrained weights:', weights)
+    print('config file:', cfg)
+    print('pretrained weights:', weights)
 
     # 1、加载模型
     model = Darknet(cfg).to(device)
@@ -184,7 +182,7 @@ if __name__ == '__main__':
     #     raise Exception("pretrained model's path can't be NULL!")
 
     # 2、加载数据集
-    train_dataset = VocDataset(train_txt_path, img_size, with_label=True)
+    train_dataset = VocDataset(train_txt_path, img_size, with_label=True, is_training=True)
     dataloader = DataLoader(train_dataset,
                             batch_size=batch_size,
                             shuffle=True,  # TODO: True
@@ -194,7 +192,9 @@ if __name__ == '__main__':
 
     # 3、设置优化器 和 学习率
     start_epoch = 0
-    optimizer = torch.optim.SGD(model.parameters(), lr=lr0, momentum=momentum, weight_decay=weight_decay)  # TODO：nesterov ?  weight_decay=0.0005 ?
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr0, momentum=momentum, weight_decay=weight_decay, nesterov=True)
+    #optimizer = torch.optim.Adam(model.parameters(), lr=lr0)  # TODO: can't use Adam
+
     ######
     # # Optimizer
     # pg0, pg1, pg2 = [], [], []  # optimizer parameter groups
@@ -213,6 +213,20 @@ if __name__ == '__main__':
     # del pg0, pg1, pg2
     ######
 
+
+    #### 阶梯学习率
+    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(total_epochs * x) for x in [0.8, 0.9]], gamma=0.1)
+    ### 余弦学习率
+    # lf = lambda x: (1 + math.cos(x * math.pi / total_epochs)) / 2
+    # scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
+    ### 余弦学习率2 - batch step
+    # scheduler = custom_lr_scheduler.CosineDecayLR(optimizer,
+    #                                             T_max=total_epochs * len(dataloader),
+    #                                             lr_init=lr0,
+    #                                             lr_min=lr0 * 1e-2,
+    #                                             warmup=2 * len(dataloader))
+
+
     ###### apex need ######
     if mixed_precision:
         model, optimizer = amp.initialize(model, optimizer, opt_level='O1', verbosity=0)
@@ -228,16 +242,7 @@ if __name__ == '__main__':
     ######
     model.nc = nc
 
-    #### 阶梯学习率
-    #scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(total_epochs * x) for x in [0.8, 0.9]], gamma=0.1)
-    ### 余弦学习率
-    # lf = lambda x: (1 + math.cos(x * math.pi / total_epochs)) / 2
-    # scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
-    scheduler = cosine_lr_scheduler.CosineDecayLR(optimizer,
-                                                T_max=total_epochs * len(dataloader),
-                                                lr_init=lr0,
-                                                lr_min=lr0 * 0.01,
-                                                warmup=2 * len(dataloader))
+
 
     # 4、训练
     print('')   # 换行
@@ -279,21 +284,29 @@ if __name__ == '__main__':
         #         if int(name.split('.')[2]) < 75:  # if layer < 75  # 多卡是[2]因为是 model.module.xxx，单卡[1]
         #             p.requires_grad = False if (epoch < 3) else True
 
+
         for i, (img_tensor, target_tensor, img_path, _) in enumerate(dataloader):
 
-            ### Update scheduler per batch
-            # # SGD burn-in
-            # ni = epoch * nb + i
-            # if ni <= 1000:  # n_burnin = 1000
-            #     lr = lr0 * (ni / 1000) ** 2
-            #     for g in optimizer.param_groups:
-            #         g['lr'] = lr
-            scheduler.step(len(dataloader) * epoch + i)
+            # 调整学习率，进行warm up和学习率衰减
+            ## Update scheduler per batch
+
+            # clw note: SGD burn-in is very important when starting from stratch or only load darknet53.conv.74,
+            #           because it's easy to cause loss infinite
+            ni = epoch * nb + i
+            if ni <= 500:  # n_burnin = 1000
+                lr = lr0 * (ni / 500) ** 2
+                for g in optimizer.param_groups:
+                    g['lr'] = lr
+
+            #ni = epoch * nb + i
+            # scheduler.step(ni)
+            # lr = adjust_learning_rate(optimizer, 0.1, lr0, total_epochs, epoch, ni, nb)
 
             batch_start = time.time()
-            #print(img_path)
             img_tensor = img_tensor.to(device)
             target_tensor = target_tensor.to(device)
+
+
             ### 训练过程主要包括以下几个步骤：
             # (1) 前传
             #print('img_tensor:', img_tensor[0][1][208][208])
@@ -333,7 +346,7 @@ if __name__ == '__main__':
                 
             # Plot
             if epoch == start_epoch  and i == 0:
-                fname = 'train_batch.jpg' # filename
+                fname = 'train_batch0.jpg' # filename
                 cur_path = os.getcwd()
                 res = plot_images(images=img_tensor, targets=target_tensor, paths=img_path, fname=os.path.join(cur_path, fname))
                 writer.add_image(fname, res, dataformats='HWC', global_step=epoch)
@@ -341,13 +354,13 @@ if __name__ == '__main__':
 
             # end batch ------------------------------------------------------------------------------------------------
 
-        print('clw: time use per epoch: %.3fs' % (time.time() - start))
+        print('time use per epoch: %.3fs' % (time.time() - start))
 
         write_to_file(title, log_file_path)
         write_to_file(s, log_file_path)
 
         ### Update scheduler per epoch
-        # scheduler.step()
+        scheduler.step()
 
         # compute mAP
         results, maps = test.test(cfg,

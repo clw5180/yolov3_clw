@@ -7,6 +7,7 @@ import cv2
 import random
 import torch.nn as nn
 import matplotlib.pyplot as plt
+from utils.globals import *
 
 ####################
 
@@ -153,7 +154,7 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
     tx_all, ty_all, th_all, tw_all = [], [], [], []
     obj_mask_all, noobj_mask_all = [], []
     multi_gpu = type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
-    reject, use_all_anchors = False, False
+    use_all_anchors = False
 
     for i in model.yolo_layers:
         # get number of grid points and anchor vec for this yolo layer
@@ -199,8 +200,8 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
         b, c = t[:, :2].long().t()  # target image, class
         gi, gj = gxy.long().t()  # grid x, y indices
         #indices.append((b, a, gj, gi))
-        obj_mask[b, a, gj, gi] = 1   # TODO: why is gj, gi,   not gi, gj ?
-        aaa = torch.sum(obj_mask)  # TODO: aaa is 200, not 201, so some anchor match 2 gt
+        obj_mask[b, a, gj, gi] = 1   # TODO: why is gj, gi,   not gi, gj ? --- I think both are ok
+        #aaa = torch.sum(obj_mask)  # TODO: aaa is 200, not 201, so some anchor match 2 gt
         noobj_mask[b, a, gj, gi] = 0
 
         # Set noobj mask to zero where iou exceeds ignore threshold
@@ -216,8 +217,6 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
         ty[b, a, gj, gi] = gy - gy.floor()  #
         tw[b, a, gj, gi] = torch.log(gw / anchor_vec[a][:, 0] + 1e-16)
         th[b, a, gj, gi] = torch.log(gh / anchor_vec[a][:, 1] + 1e-16)
-        tcls[b, a, gj, gi, c] = 1
-
         # tbox.append(torch.cat((gxy, gwh), 1))  # xywh (grids)
         tx_all.append(tx)
         ty_all.append(ty)
@@ -225,7 +224,9 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
         th_all.append(th)
 
         # Class
+        tcls[b, a, gj, gi, c] = 1
         tcls_all.append(tcls)
+
         if c.shape[0]:  # if any targets
             #assert c.max() <= model.nc, 'Target classes exceed model classes'
             assert c.max() <= model.nc, 'Model accepts %g classes labeled from 0-%g, however you supplied a label %g. See \
@@ -259,6 +260,8 @@ def compute_loss(p, targets, model):  # p:predictions，一个list包含3个tens
         #b, a, gj, gi = indices[i]  # target image idx, anchor idx, gt的x_ctr和y_ctr所在cell左上角坐标，整数
         obj_mask = obj_mask_all[i]
         noobj_mask = noobj_mask_all[i]
+        # obj_mask = obj_mask_all[i].bool()   # clw note: for pytorch 1.4, have UserWarning: indexing with dtype torch.uint8 is now deprecated, please use a dtype torch.bool instead
+        # noobj_mask = noobj_mask_all[i].bool()
         tx = tx_all[i][obj_mask]  # 需要把gt所在的那个grid cell的预测结果拿出来
         ty = ty_all[i][obj_mask]
         tw = tw_all[i][obj_mask]
@@ -291,7 +294,7 @@ def compute_loss(p, targets, model):  # p:predictions，一个list包含3个tens
         tconf = obj_mask.float()
         loss_obj = BCEobj(pi[obj_mask][..., 4], tconf[obj_mask])
         loss_noobj = BCEobj(pi[noobj_mask][..., 4],  tconf[noobj_mask])
-        loss_obj_all = loss_obj + loss_noobj
+        loss_obj_all = loss_obj + 0.05 * loss_noobj
         lobj += loss_obj_all
 
     lbox /= bs
@@ -432,6 +435,7 @@ def select_device(device):  # 暂时不支持 CPU
             s = ' ' * len(s)
         print("%sdevice%g _CudaDeviceProperties(name='%s', total_memory=%dMB)" % (s, i, x[i].name, x[i].total_memory / 1024 ** 2))  # bytes to MB
     print('')
+    write_to_file('\n', log_file_path)
 
     '''
     Using CUDA device0 _CudaDeviceProperties(name='GeForce GTX 1080', total_memory=8116MB)
@@ -671,7 +675,7 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):   # predicti
         # Set NMS method https://github.com/ultralytics/yolov3/issues/679
         # 'OR', 'AND', 'MERGE', 'VISION', 'VISION_BATCHED'
         # method = 'MERGE' if conf_thres <= 0.1 else 'VISION'  # MERGE is highest mAP, VISION is fastest
-        method = 'MERGE'
+        method = 'MERGE'  # TODO
 
         # Batched NMS
         if method == 'VISION_BATCHED':
@@ -1055,7 +1059,7 @@ def weights_init_normal(m):
         torch.nn.init.normal_(m.weight.data, 0.0, 0.01)
         if m.bias is not None:
             m.bias.data.zero_()
-        print("initing {}".format(m))
+        # print("initing {}".format(m))
         ###############
 
 
@@ -1064,7 +1068,7 @@ def weights_init_normal(m):
         ###############
         torch.nn.init.constant_(m.weight.data, 1.0)
         torch.nn.init.constant_(m.bias.data, 0.0)
-        print("initing {}".format(m))
+        # print("initing {}".format(m))
         ###########
 
         # torch.nn.init.normal_(m.weight.data, 1.0, 0.02)

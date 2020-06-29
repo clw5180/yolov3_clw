@@ -21,7 +21,9 @@ class VocDataset(Dataset):  # for training/testing
     以及图片大小img_size，制作可用于迭代的训练集；
     适用目录结构：cat1.txt放置在和cat1.jpg同一文件夹下，cat1.txt是由当前目录下的cat1.xml通过 xml2txt.py脚本转化而来
     '''
-    def __init__(self, txt_path, img_size, with_label):
+    def __init__(self, txt_path, img_size, with_label, is_training):  # clw note: (1) with_label=True, is_training=True -> train
+                                                                      #           (2) with_label=True, is_training=False -> val(no aug)
+                                                                      #           (3) with_label=False, is_training=False -> test
         # 1、获取所有图片路径，存入 list
         with open(txt_path, 'r') as f:
             self.img_file_paths = [x.replace(os.sep, '/') for x in f.read().splitlines()]
@@ -38,7 +40,7 @@ class VocDataset(Dataset):  # for training/testing
         self.with_label = with_label
 
         # 3、transforms and data aug，如必须要做的 Resize(), ToTensor()
-        self.transforms = build_transforms(img_size, with_label)
+        self.transforms = build_transforms(img_size, is_training)
 
     def __len__(self):
         return len(self.img_file_paths)

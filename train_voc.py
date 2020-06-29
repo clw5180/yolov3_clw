@@ -82,8 +82,8 @@ def train():
     nc = int(data['classes'])
 
     # 0、打印配置文件信息，写log等
-    print('clw: config file:', cfg)
-    print('clw: pretrained weights:', weights)
+    print('config file:', cfg)
+    print('pretrained weights:', weights)
 
     # 1、加载模型
     model = Darknet(cfg).to(device)
@@ -299,7 +299,7 @@ def train():
 
             # end batch ------------------------------------------------------------------------------------------------
 
-        print('clw: time use per epoch: %.3fs' % (time.time() - start))
+        print('time use per epoch: %.3fs' % (time.time() - start))
 
         write_to_file(title, log_file_path)
         write_to_file(s, log_file_path)

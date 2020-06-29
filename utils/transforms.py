@@ -1,7 +1,8 @@
 import numpy as np
 import cv2
 import torch
-from utils.utils import xyxy2xywh
+from utils.utils import xyxy2xywh, write_to_file
+from utils.globals import *
 import random
 
 def build_transforms(img_size, is_train=False):
@@ -18,7 +19,6 @@ def build_transforms(img_size, is_train=False):
         transform = Compose([
             Resize(img_size),
             ToTensor()
-            # TODO: 归一化，但是使用预训练模型应该不能加
         ])
     return transform
 
@@ -108,6 +108,8 @@ class Resize(object):
 
 class RandomHorizontalFilp(object):
     def __init__(self, p=0.5):
+        print('using RandomHorizontalFilp !')
+        write_to_file('using RandomHorizontalFilp !', log_file_path)
         self.p = p
 
     def __call__(self, data):
@@ -128,6 +130,8 @@ class RandomHorizontalFilp(object):
 
 class RandomCrop(object):
     def __init__(self, p=0.5):
+        print('using RandomCrop !')
+        write_to_file('using RandomCrop !', log_file_path)
         self.p = p
 
     def __call__(self, data):
@@ -164,6 +168,8 @@ class RandomCrop(object):
 
 class RandomAffine(object):
     def __init__(self, p=0.5):
+        print('using RandomAffine !')
+        write_to_file('using RandomAffine !', log_file_path)
         self.p = p
 
     def __call__(self, data):
@@ -195,20 +201,10 @@ class RandomAffine(object):
                 return data
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 class LetterBox(object):
     def __init__(self, new_shape, interp=cv2.INTER_LINEAR):  # cv2.INTER_AREA
+        print('using LetterBox !')
+        write_to_file('using LetterBox !', log_file_path)
         if isinstance(new_shape, int):
             self.new_shape = (new_shape, new_shape)  # 规定为 h，w
         self.interp = interp
