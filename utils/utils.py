@@ -154,7 +154,7 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
     tx_all, ty_all, th_all, tw_all = [], [], [], []
     obj_mask_all, noobj_mask_all = [], []
     multi_gpu = type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
-    use_all_anchors = False
+    use_all_anchors = True
 
     for i in model.yolo_layers:
         # get number of grid points and anchor vec for this yolo layer
@@ -176,37 +176,36 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
         t, a = targets, []
         gwh = t[:, 4:6] * ng
         gxy = t[:, 2:4] * ng  # grid x, y
-        #gxywh = torch.cat((gxy, gwh), 1)  # clw note: TODO
+        gxywh = torch.cat((gxy, gwh), 1)  # clw note: TODO
 
         if nt:
-            iou = torch.stack([wh_iou(x, gwh) for x in anchor_vec], 0)
-            #iou = torch.stack([bboxes_anchor_iou(gxywh, anchor, x1y1x2y2=False) for anchor in anchor_vec], 0)  # clw modify: wh_iou is not accurate enough
+            #iou = torch.stack([wh_iou(x, gwh) for x in anchor_vec], 0)
+            iou = torch.stack([bboxes_anchor_iou(gxywh, anchor, x1y1x2y2=False) for anchor in anchor_vec], 0)  # clw modify: wh_iou is not accurate enough
 
             if use_all_anchors:
                 na = len(anchor_vec)  # number of anchors
                 a = torch.arange(na).view((-1, 1)).repeat([1, nt]).view(-1)  # anchor_idx, represent which anchor in this yolo_layer, 0, 1 or 2
                 t = targets.repeat([na, 1])
+                gxy = gxy.repeat([na, 1])
                 gwh = gwh.repeat([na, 1])
-                iou = iou.view(-1)  # use all ious
-            else:  # use best anchor only
-                best_iou, a = iou.max(0)  # best iou and anchor,  for example: nt=201, a:(201,), iou:(201,)
+                iou_mask = (iou > 0.3).view(-1)
+                t, a, gxy, gwh = t[iou_mask], a[iou_mask], gxy[iou_mask], gwh[iou_mask]
 
-            # reject anchors below iou_thres (OPTIONAL, increases P, lowers R)
-            # if reject:
-            #     j = iou.view(-1) > 0.2 # iou threshold hyperparameter
-            #     t, a, gwh = t[j], a[j], gwh[j]  # TODO: gxy, gxywh
+            else:  # use best anchor only
+                _, a = iou.max(0)  # best iou and anchor,  for example: nt=201, a:(201,), iou:(201,)
 
         # Indices
         b, c = t[:, :2].long().t()  # target image, class
         gi, gj = gxy.long().t()  # grid x, y indices
-        #indices.append((b, a, gj, gi))
         obj_mask[b, a, gj, gi] = 1   # TODO: why is gj, gi,   not gi, gj ? --- I think both are ok
         #aaa = torch.sum(obj_mask)  # TODO: aaa is 200, not 201, so some anchor match 2 gt
         noobj_mask[b, a, gj, gi] = 0
 
         # Set noobj mask to zero where iou exceeds ignore threshold
-        for i, iou_ in enumerate(iou.t()):  # iou.t(): (201, 3)    iou_: (3,)
-            noobj_mask[b[i], iou_ > 0.5, gj[i], gi[i]] = 0    # 0.5 is ignore_thres, such as paper said.
+        if not use_all_anchors:  # use best anchor, such as paper did
+            for i, iou_ in enumerate(iou.t()):  # iou.t(): (201, 3)    iou_: (3,)
+                noobj_mask[b[i], iou_ > 0.5, gj[i], gi[i]] = 0    # 0.5 is ignore_thres, such as paper said.
+
         obj_mask_all.append(obj_mask)
         noobj_mask_all.append(noobj_mask)
 
@@ -294,7 +293,8 @@ def compute_loss(p, targets, model):  # p:predictions，一个list包含3个tens
         tconf = obj_mask.float()
         loss_obj = BCEobj(pi[obj_mask][..., 4], tconf[obj_mask])
         loss_noobj = BCEobj(pi[noobj_mask][..., 4],  tconf[noobj_mask])
-        loss_obj_all = loss_obj + 0.05 * loss_noobj
+        loss_obj_all = loss_obj + loss_noobj
+        #loss_obj_all = loss_obj + loss_noobj
         lobj += loss_obj_all
 
     lbox /= bs
@@ -433,7 +433,7 @@ def select_device(device):  # 暂时不支持 CPU
     for i, gpu_idx in enumerate(gpu_idxs):
         if i == len(gpu_idxs) - 1:
             s = ' ' * len(s)
-        print("%sdevice%g _CudaDeviceProperties(name='%s', total_memory=%dMB)" % (s, i, x[i].name, x[i].total_memory / 1024 ** 2))  # bytes to MB
+        print("%sdevice%g _CudaDeviceProperties(name='%s', total_memory=%dMB)" % (s, gpu_idxs[i], x[i].name, x[i].total_memory / 1024 ** 2))  # bytes to MB
     print('')
     write_to_file('\n', log_file_path)
 
@@ -442,7 +442,7 @@ def select_device(device):  # 暂时不支持 CPU
            device1 _CudaDeviceProperties(name='GeForce GTX 1080', total_memory=8119MB)
     '''
 
-    return torch.device('cuda')
+    return torch.device('cuda:{}'.format(gpu_idxs[0]))
 
 
 def xyxy2xywh(x):
@@ -612,196 +612,201 @@ def bboxes_anchor_iou(box1, anchors_wh, x1y1x2y2=True):
 
 
 # modify by clw
-def non_max_suppression(prediction, conf_thres=0.5, nms_thresh=0.5):
-    """Pure Python NMS baseline."""
-
-    output = [None] * len(prediction)
-
-    for image_i, dets in enumerate(prediction):
-        if dets is None or len(dets) == 0 :
-            continue
-
-        # Multiply conf by class conf to get combined confidence
-        class_conf, class_pred = dets[:, 5:].max(1)
-        dets[:, 4] *= class_conf
-        # Detections ordered as (x1y1x2y2, obj_conf, class_conf, class_pred)
-        dets = torch.cat((dets[:, :5], class_conf.unsqueeze(1), class_pred.unsqueeze(1).float()), 1)  # clw note: (10647, 7)
-        dets = dets[dets[:, 4] > conf_thres]  # (173, 7)
-
-        # x1、y1、x2、y2、以及score赋值
-        x1 = dets[:, 0]     # xmin
-        y1 = dets[:, 1]     # ymin
-        x2 = dets[:, 2]     # w
-        y2 = dets[:, 3]     # h
-        scores = dets[:, 4]
-
-
-        areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-        # argsort()返回数组值从小到大的索引值
-        _, order = torch.sort(scores, descending=True)
-        order = order.cpu().numpy()
-        keep = []
-        det_max = []
-
-        while isinstance(order, np.ndarray) and len(order) > 0:  # 还有数据
-            #print(len(order))
-            i = order[0]
-            keep.append(i)
-            # 计算当前概率最大矩形框与其他矩形框的相交框的坐标
-            xx1 = torch.max(x1[i], x1[order[1:]])
-            yy1 = torch.max(y1[i], y1[order[1:]])
-            xx2 = torch.min(x2[i], x2[order[1:]])
-            yy2 = torch.min(y2[i], y2[order[1:]])
-            # 计算相交框的面积
-            w = torch.max(torch.tensor([0.0]).cuda(), xx2 - xx1 + 1)
-            h = torch.max(torch.tensor([0.0]).cuda(), yy2 - yy1 + 1)
-            inter = w * h
-            # 计算重叠度IOU：重叠面积/（面积1+面积2-重叠面积）
-            IOU = inter / (areas[i] + areas[order[1:]] - inter)
-            # 找到重叠度不高于阈值的矩形框索引
-            left_index = (IOU <= nms_thresh).nonzero().squeeze().cpu().numpy()
-            # 将order序列更新，由于前面得到的矩形框索引要比矩形框在原order序列中的索引小1，所以要把这个1加回来
-            order = order[left_index + 1]
-
-        det_max = dets[keep]
-        if det_max.shape != torch.Size([0]):
-            output[image_i] = det_max  # sort
-
-    return output  # list (bs, )  -> such as tensor (53, 7)
-
-
-# def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):   # prediction: (bs, 10647, 25), 10647=(13*13+26*26+52*52)*3
-#     """
-#     Removes detections with lower object confidence score than 'conf_thres'
-#     Non-Maximum Suppression to further filter detections.
-#     Returns detections with shape:
-#         (x1, y1, x2, y2, object_conf, class_conf, class)
-#     """
-#
-#     #min_wh, max_wh = 2, 30000  # (pixels) minimum and maximium box width and height
-#     min_wh, max_wh = 2, 10000
+# def non_max_suppression(prediction, conf_thres=0.5, nms_thresh=0.5):
+#     """Pure Python NMS baseline."""
 #
 #     output = [None] * len(prediction)
-#     for image_i, pred in enumerate(prediction):
-#         if pred is None or len(pred) == 0 :
+#
+#     for image_i, dets in enumerate(prediction):
+#         if dets is None or len(dets) == 0 :
 #             continue
 #
 #         # Multiply conf by class conf to get combined confidence
-#         class_conf, class_pred = pred[:, 5:].max(1)
-#         pred[:, 4] *= class_conf
-#
-#         # # Merge classes (optional)
-#         # class_pred[(class_pred.view(-1,1) == torch.LongTensor([2, 3, 5, 6, 7]).view(1,-1)).any(1)] = 2
-#         #
-#         # # Remove classes (optional)
-#         # pred[class_pred != 2, 4] = 0.0
-#
-#         # Select only suitable predictions
-#         i = (pred[:, 4] > conf_thres) & (pred[:, 2:4] > min_wh).all(1) & (pred[:, 2:4] < max_wh).all(1) & \
-#             torch.isfinite(pred).all(1)
-#         pred = pred[i]
-#
-#         # If none are remaining => process next image
-#         if len(pred) == 0:
-#             continue
-#
-#         # Select predicted classes
-#         class_conf = class_conf[i]
-#         class_pred = class_pred[i].unsqueeze(1).float()
-#
-#         # Box (center x, center y, width, height) to (x1, y1, x2, y2)
-#         pred[:, :4] = xywh2xyxy(pred[:, :4])
-#         # pred[:, 4] *= class_conf  # improves mAP from 0.549 to 0.551
-#
+#         class_conf, class_pred = dets[:, 5:].max(1)
+#         dets[:, 4] *= class_conf
 #         # Detections ordered as (x1y1x2y2, obj_conf, class_conf, class_pred)
-#         pred = torch.cat((pred[:, :5], class_conf.unsqueeze(1), class_pred), 1)
+#         dets = torch.cat((dets[:, :5], class_conf.unsqueeze(1), class_pred.unsqueeze(1).float()), 1)  # clw note: (10647, 7)
+#         dets = dets[dets[:, 4] > conf_thres]  # (173, 7)
 #
-#         # Get detections sorted by decreasing confidence scores
-#         pred = pred[(-pred[:, 4]).argsort()]
+#         # x_ctr,y_ctr,w,h -> x1,y1,x2,y2
+#         dets[:, 0] -= dets[:, 2] / 2
+#         dets[:, 1] -= dets[:, 3] / 2
+#         dets[:, 2] += dets[:, 0]
+#         dets[:, 3] += dets[:, 1]
 #
-#         # Set NMS method https://github.com/ultralytics/yolov3/issues/679
-#         # 'OR', 'AND', 'MERGE', 'VISION', 'VISION_BATCHED'
-#         # method = 'MERGE' if conf_thres <= 0.1 else 'VISION'  # MERGE is highest mAP, VISION is fastest
-#         method = 'MERGE'  # TODO
+#         # x1、y1、x2、y2、以及score赋值
+#         x1 = dets[:, 0]     # xmin
+#         y1 = dets[:, 1]     # ymin
+#         x2 = dets[:, 2]      # w
+#         y2 = dets[:, 3]     # h
+#         scores = dets[:, 4]
 #
-#         # Batched NMS
-#         if method == 'VISION_BATCHED':
-#             i = torchvision.ops.boxes.batched_nms(boxes=pred[:, :4],
-#                                                   scores=pred[:, 4],
-#                                                   idxs=pred[:, 6],
-#                                                   iou_threshold=nms_thres)
-#             output[image_i] = pred[i]
-#             continue
 #
-#         # Non-maximum suppression
-#         det_max = []
+#         areas = (x2 - x1 + 1) * (y2 - y1 + 1)
+#         # argsort()返回数组值从小到大的索引值
+#         _, order = torch.sort(scores, descending=True)
+#         order = order.cpu().numpy()
+#         keep = []
 #
-#         for c in pred[:, -1].unique():
-#             dc = pred[pred[:, -1] == c]  # select class c
-#             n = len(dc)
-#             if n == 1:
-#                 det_max.append(dc)  # No NMS required if only 1 prediction
-#                 continue
-#             elif n > 500:
-#                 dc = dc[:500]  # limit to first 500 boxes: https://github.com/ultralytics/yolov3/issues/117
+#         while isinstance(order, np.ndarray) and len(order) > 0:  # 还有数据
+#             #print(len(order))
+#             i = order[0]
+#             keep.append(i)
+#             # 计算当前概率最大矩形框与其他矩形框的相交框的坐标
+#             xx1 = torch.max(x1[i], x1[order[1:]])
+#             yy1 = torch.max(y1[i], y1[order[1:]])
+#             xx2 = torch.min(x2[i], x2[order[1:]])
+#             yy2 = torch.min(y2[i], y2[order[1:]])
+#             # 计算相交框的面积
+#             w = torch.max(torch.tensor([0.0]).cuda(), xx2 - xx1 + 1)
+#             h = torch.max(torch.tensor([0.0]).cuda(), yy2 - yy1 + 1)
+#             inter = w * h
+#             # 计算重叠度IOU：重叠面积/（面积1+面积2-重叠面积）
+#             IOU = inter / (areas[i] + areas[order[1:]] - inter)
+#             # 找到重叠度不高于阈值的矩形框索引
+#             left_index = (IOU <= nms_thresh).nonzero().squeeze().cpu().numpy()
+#             # 将order序列更新，由于前面得到的矩形框索引要比矩形框在原order序列中的索引小1，所以要把这个1加回来
+#             order = order[left_index + 1]
 #
-#             if method == 'VISION':
-#                 i = torchvision.ops.boxes.nms(dc[:, :4], dc[:, 4], nms_thres)
-#                 det_max.append(dc[i])
+#         det_max = dets[keep]
+#         if det_max.shape != torch.Size([0]):
+#             output[image_i] = det_max  # sort
 #
-#             elif method == 'OR':  # default
-#                 # METHOD1
-#                 # ind = list(range(len(dc)))
-#                 # while len(ind):
-#                 # j = ind[0]
-#                 # det_max.append(dc[j:j + 1])  # save highest conf detection
-#                 # reject = (bbox_iou(dc[j], dc[ind]) > nms_thres).nonzero()
-#                 # [ind.pop(i) for i in reversed(reject)]
-#
-#                 # METHOD2
-#                 while dc.shape[0]:
-#                     det_max.append(dc[:1])  # save highest conf detection
-#                     if len(dc) == 1:  # Stop if we're at the last detection
-#                         break
-#                     iou = bbox_iou(dc[0], dc[1:])  # iou with other boxes
-#                     dc = dc[1:][iou < nms_thres]  # remove ious > threshold
-#
-#             elif method == 'AND':  # requires overlap, single boxes erased
-#                 while len(dc) > 1:
-#                     iou = bbox_iou(dc[0], dc[1:])  # iou with other boxes
-#                     if iou.max() > 0.5:
-#                         det_max.append(dc[:1])
-#                     dc = dc[1:][iou < nms_thres]  # remove ious > threshold
-#
-#             elif method == 'MERGE':  # weighted mixture box
-#                 while len(dc):
-#                     if len(dc) == 1:
-#                         det_max.append(dc)
-#                         break
-#                     i = bbox_iou(dc[0], dc) > nms_thres  # iou with other boxes
-#                     weights = dc[i, 4:5]
-#                     dc[0, :4] = (weights * dc[i, :4]).sum(0) / weights.sum()
-#                     det_max.append(dc[:1])
-#                     dc = dc[i == 0]
-#
-#             elif method == 'SOFT':  # soft-NMS https://arxiv.org/abs/1704.04503
-#                 sigma = 0.5  # soft-nms sigma parameter
-#                 while len(dc):
-#                     if len(dc) == 1:
-#                         det_max.append(dc)
-#                         break
-#                     det_max.append(dc[:1])
-#                     iou = bbox_iou(dc[0], dc[1:])  # iou with other boxes
-#                     dc = dc[1:]
-#                     dc[:, 4] *= torch.exp(-iou ** 2 / sigma)  # decay confidences
-#                     # dc = dc[dc[:, 4] > nms_thres]  # new line per https://github.com/ultralytics/yolov3/issues/362
-#                     dc = dc[dc[:, 4] > conf_thres]  # new line per https://github.com/ultralytics/yolov3/issues/362
-#
-#         if len(det_max):
-#             det_max = torch.cat(det_max)  # concatenate
-#             output[image_i] = det_max[(-det_max[:, 4]).argsort()]  # sort
-#
-#     return output   # list (64,)  ->  (n, 7)
+#     return output  # list (bs, )  -> such as tensor (53, 7)
+
+
+def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):   # prediction: (bs, 10647, 25), 10647=(13*13+26*26+52*52)*3
+    """
+    Removes detections with lower object confidence score than 'conf_thres'
+    Non-Maximum Suppression to further filter detections.
+    Returns detections with shape:
+        (x1, y1, x2, y2, object_conf, class_conf, class)
+    """
+
+    #min_wh, max_wh = 2, 30000  # (pixels) minimum and maximium box width and height
+    min_wh, max_wh = 2, 10000
+
+    output = [None] * len(prediction)
+    for image_i, pred in enumerate(prediction):
+        if pred is None or len(pred) == 0 :
+            continue
+
+        # Multiply conf by class conf to get combined confidence
+        class_conf, class_pred = pred[:, 5:].max(1)
+        pred[:, 4] *= class_conf
+
+        # # Merge classes (optional)
+        # class_pred[(class_pred.view(-1,1) == torch.LongTensor([2, 3, 5, 6, 7]).view(1,-1)).any(1)] = 2
+        #
+        # # Remove classes (optional)
+        # pred[class_pred != 2, 4] = 0.0
+
+        # Select only suitable predictions
+        i = (pred[:, 4] > conf_thres) & (pred[:, 2:4] > min_wh).all(1) & (pred[:, 2:4] < max_wh).all(1) & \
+            torch.isfinite(pred).all(1)
+        pred = pred[i]
+
+        # If none are remaining => process next image
+        if len(pred) == 0:
+            continue
+
+        # Select predicted classes
+        class_conf = class_conf[i]
+        class_pred = class_pred[i].unsqueeze(1).float()
+
+        # Box (center x, center y, width, height) to (x1, y1, x2, y2)
+        pred[:, :4] = xywh2xyxy(pred[:, :4])
+        # pred[:, 4] *= class_conf  # improves mAP from 0.549 to 0.551
+
+        # Detections ordered as (x1y1x2y2, obj_conf, class_conf, class_pred)
+        pred = torch.cat((pred[:, :5], class_conf.unsqueeze(1), class_pred), 1)
+
+        # Get detections sorted by decreasing confidence scores
+        pred = pred[(-pred[:, 4]).argsort()]
+
+        # Set NMS method https://github.com/ultralytics/yolov3/issues/679
+        # 'OR', 'AND', 'MERGE', 'VISION', 'VISION_BATCHED'
+        # method = 'MERGE' if conf_thres <= 0.1 else 'VISION'  # MERGE is highest mAP, VISION is fastest
+        method = 'MERGE'  # TODO
+
+        # Batched NMS
+        if method == 'VISION_BATCHED':
+            i = torchvision.ops.boxes.batched_nms(boxes=pred[:, :4],
+                                                  scores=pred[:, 4],
+                                                  idxs=pred[:, 6],
+                                                  iou_threshold=nms_thres)
+            output[image_i] = pred[i]
+            continue
+
+        # Non-maximum suppression
+        det_max = []
+
+        for c in pred[:, -1].unique():
+            dc = pred[pred[:, -1] == c]  # select class c
+            n = len(dc)
+            if n == 1:
+                det_max.append(dc)  # No NMS required if only 1 prediction
+                continue
+            elif n > 500:
+                dc = dc[:500]  # limit to first 500 boxes: https://github.com/ultralytics/yolov3/issues/117
+
+            if method == 'VISION':
+                i = torchvision.ops.boxes.nms(dc[:, :4], dc[:, 4], nms_thres)
+                det_max.append(dc[i])
+
+            elif method == 'OR':  # default
+                # METHOD1
+                # ind = list(range(len(dc)))
+                # while len(ind):
+                # j = ind[0]
+                # det_max.append(dc[j:j + 1])  # save highest conf detection
+                # reject = (bbox_iou(dc[j], dc[ind]) > nms_thres).nonzero()
+                # [ind.pop(i) for i in reversed(reject)]
+
+                # METHOD2
+                while dc.shape[0]:
+                    det_max.append(dc[:1])  # save highest conf detection
+                    if len(dc) == 1:  # Stop if we're at the last detection
+                        break
+                    iou = bbox_iou(dc[0], dc[1:])  # iou with other boxes
+                    dc = dc[1:][iou < nms_thres]  # remove ious > threshold
+
+            elif method == 'AND':  # requires overlap, single boxes erased
+                while len(dc) > 1:
+                    iou = bbox_iou(dc[0], dc[1:])  # iou with other boxes
+                    if iou.max() > 0.5:
+                        det_max.append(dc[:1])
+                    dc = dc[1:][iou < nms_thres]  # remove ious > threshold
+
+            elif method == 'MERGE':  # weighted mixture box
+                while len(dc):
+                    if len(dc) == 1:
+                        det_max.append(dc)
+                        break
+                    i = bbox_iou(dc[0], dc) > nms_thres  # iou with other boxes
+                    weights = dc[i, 4:5]
+                    dc[0, :4] = (weights * dc[i, :4]).sum(0) / weights.sum()
+                    det_max.append(dc[:1])
+                    dc = dc[i == 0]
+
+            elif method == 'SOFT':  # soft-NMS https://arxiv.org/abs/1704.04503
+                sigma = 0.5  # soft-nms sigma parameter
+                while len(dc):
+                    if len(dc) == 1:
+                        det_max.append(dc)
+                        break
+                    det_max.append(dc[:1])
+                    iou = bbox_iou(dc[0], dc[1:])  # iou with other boxes
+                    dc = dc[1:]
+                    dc[:, 4] *= torch.exp(-iou ** 2 / sigma)  # decay confidences
+                    # dc = dc[dc[:, 4] > nms_thres]  # new line per https://github.com/ultralytics/yolov3/issues/362
+                    dc = dc[dc[:, 4] > conf_thres]  # new line per https://github.com/ultralytics/yolov3/issues/362
+
+        if len(det_max):
+            det_max = torch.cat(det_max)  # concatenate
+            output[image_i] = det_max[(-det_max[:, 4]).argsort()]  # sort
+
+    return output   # list (64,)  ->  (n, 7)
 
 
 

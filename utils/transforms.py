@@ -8,11 +8,15 @@ import random
 def build_transforms(img_size, is_train=False):
     if is_train:
         transform = Compose([
+            # RandomHorizontalFilp(),
+            # RandomCrop(),
+            # Resize(img_size),  # clw modify
+            # RandomAffine(),
+
             RandomHorizontalFilp(),
             RandomCrop(),
-            Resize(img_size),  # clw modify
             RandomAffine(),
-            #LetterBox(img_size),
+            LetterBox(img_size),  # clw modify
             ToTensor()              # clw modify
         ])
     else:
@@ -111,6 +115,7 @@ class RandomHorizontalFilp(object):
         print('using RandomHorizontalFilp !')
         write_to_file('using RandomHorizontalFilp !', log_file_path)
         self.p = p
+        self.showed_sample = SHOWED_SAMPLE
 
     def __call__(self, data):
         if not isinstance(data, tuple):
@@ -123,6 +128,21 @@ class RandomHorizontalFilp(object):
                 img = img[:, ::-1, :]
                 #label[:, 2] = w_img - label[:, 2]
                 label[:, 2] = 1 - label[:, 2]
+
+                ################
+                if not self.showed_sample:
+                    img_out = img.copy()
+                    boxes = label[:, 2:6]
+                    for box in boxes:
+                        xmin = box[0] * img.shape[1] - box[2] * img.shape[1] / 2
+                        ymin = box[1] * img.shape[0] - box[3] * img.shape[0] / 2
+                        xmax = box[0] * img.shape[1] + box[2] * img.shape[1] / 2
+                        ymax = box[1] * img.shape[0] + box[3] * img.shape[0] / 2
+                        img_out = cv2.rectangle(img_out, (xmin, ymin), (xmax, ymax), color=(0, 0, 255))
+                    cv2.imwrite('hflip.jpg', img_out)
+                    self.showed_sample = True
+                ################
+
                 return (img, label)
             else:
                 return data
@@ -133,6 +153,7 @@ class RandomCrop(object):
         print('using RandomCrop !')
         write_to_file('using RandomCrop !', log_file_path)
         self.p = p
+        self.showed_sample = SHOWED_SAMPLE
 
     def __call__(self, data):
         if not isinstance(data, tuple):
@@ -161,6 +182,20 @@ class RandomCrop(object):
                 label[:, 4] = label[:, 4] * w_img / w_img_new
                 label[:, 5] = label[:, 5] * h_img / h_img_new
 
+                ################
+                if not self.showed_sample:
+                    img_out = img.copy()
+                    boxes = label[:, 2:6]
+                    for box in boxes:
+                        xmin = box[0] * w_img_new - box[2] * w_img_new / 2
+                        ymin = box[1] * h_img_new - box[3] * h_img_new / 2
+                        xmax = box[0] * w_img_new + box[2] * w_img_new / 2
+                        ymax = box[1] * h_img_new + box[3] * h_img_new / 2
+                        img_out = cv2.rectangle(img_out, (xmin, ymin), (xmax, ymax), color=(0, 0, 255))
+                    cv2.imwrite('crop.jpg', img_out)
+                    self.showed_sample = True
+                ################
+
                 return (img, label)
             else:
                 return data
@@ -171,6 +206,7 @@ class RandomAffine(object):
         print('using RandomAffine !')
         write_to_file('using RandomAffine !', log_file_path)
         self.p = p
+        self.showed_sample = SHOWED_SAMPLE
 
     def __call__(self, data):
         if not isinstance(data, tuple):
@@ -196,6 +232,21 @@ class RandomAffine(object):
                                                               #           default border color is black (0, 0, 0)
                 label[:, 2] = label[:, 2] + dx / w_img
                 label[:, 3] = label[:, 3] + dy / h_img
+
+                ################
+                if not self.showed_sample:
+                    img_out = img.copy()
+                    boxes = label[:, 2:6]
+                    for box in boxes:
+                        xmin = box[0] * w_img - box[2] * w_img / 2
+                        ymin = box[1] * h_img - box[3] * h_img / 2
+                        xmax = box[0] * w_img + box[2] * w_img / 2
+                        ymax = box[1] * h_img + box[3] * h_img / 2
+                        img_out = cv2.rectangle(img_out, (xmin, ymin), (xmax, ymax), color=(0, 0, 255))
+                    cv2.imwrite('affine.jpg', img_out)
+                    self.showed_sample = True
+                ################
+
                 return img, label
             else:
                 return data
@@ -208,6 +259,7 @@ class LetterBox(object):
         if isinstance(new_shape, int):
             self.new_shape = (new_shape, new_shape)  # 规定为 h，w
         self.interp = interp
+        self.showed_sample = SHOWED_SAMPLE
 
     def __call__(self, data):
         if not isinstance(data, tuple):
@@ -241,6 +293,20 @@ class LetterBox(object):
             # Normalize coordinates 0 - 1
             label[:, [3, 5]] /= img.shape[0]  # height
             label[:, [2, 4]] /= img.shape[1]  # width
+
+            ################
+            if not self.showed_sample:
+                img_out = img.copy()
+                boxes = label[:, 2:6]
+                for box in boxes:
+                    xmin = box[0] * img.shape[1] - box[2] * img.shape[1] / 2
+                    ymin = box[1] * img.shape[0] - box[3] * img.shape[0] / 2
+                    xmax = box[0] * img.shape[1] + box[2] * img.shape[1] / 2
+                    ymax = box[1] * img.shape[0] + box[3] * img.shape[0] / 2
+                    img_out = cv2.rectangle(img_out, (xmin, ymin), (xmax, ymax), color=(0, 0, 255))
+                cv2.imwrite('letterbox.jpg', img_out)
+                self.showed_sample = True
+            ################
 
             return (img, label)
 

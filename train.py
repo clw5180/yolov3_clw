@@ -51,7 +51,7 @@ import math
 ### 超参数
 lr0 = 3e-3
 momentum = 0.9
-weight_decay = 5e-4
+weight_decay = 0.0005
 ###
 
 os.makedirs(log_folder, exist_ok=True)
@@ -107,7 +107,7 @@ if __name__ == '__main__':
     img_size = opt.img_size
     batch_size = opt.batch_size
     total_epochs = opt.epochs
-    init_seeds()
+    init_seeds(3)
     data = parse_data_cfg(opt.data)
     train_txt_path = data['train']
     valid_txt_path = data['valid']
@@ -220,11 +220,11 @@ if __name__ == '__main__':
     # lf = lambda x: (1 + math.cos(x * math.pi / total_epochs)) / 2
     # scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
     ### 余弦学习率2 - batch step
-    # scheduler = custom_lr_scheduler.CosineDecayLR(optimizer,
-    #                                             T_max=total_epochs * len(dataloader),
-    #                                             lr_init=lr0,
-    #                                             lr_min=lr0 * 1e-2,
-    #                                             warmup=2 * len(dataloader))
+    scheduler = custom_lr_scheduler.CosineDecayLR(optimizer,
+                                                T_max=total_epochs * len(dataloader),
+                                                lr_init=lr0,
+                                                lr_min=lr0 * 1e-3,
+                                                warmup=2 * len(dataloader))
 
 
     ###### apex need ######
@@ -292,14 +292,14 @@ if __name__ == '__main__':
 
             # clw note: SGD burn-in is very important when starting from stratch or only load darknet53.conv.74,
             #           because it's easy to cause loss infinite
-            ni = epoch * nb + i
-            if ni <= 500:  # n_burnin = 1000
-                lr = lr0 * (ni / 500) ** 2
-                for g in optimizer.param_groups:
-                    g['lr'] = lr
+            # ni = epoch * nb + i
+            # if ni <= 500:  # n_burnin = 1000
+            #     lr = lr0 * (ni / 500) ** 2
+            #     for g in optimizer.param_groups:
+            #         g['lr'] = lr
 
-            #ni = epoch * nb + i
-            # scheduler.step(ni)
+            ni = epoch * nb + i
+            scheduler.step(ni)
             # lr = adjust_learning_rate(optimizer, 0.1, lr0, total_epochs, epoch, ni, nb)
 
             batch_start = time.time()
@@ -348,7 +348,7 @@ if __name__ == '__main__':
             if epoch == start_epoch  and i == 0:
                 fname = 'train_batch0.jpg' # filename
                 cur_path = os.getcwd()
-                res = plot_images(images=img_tensor, targets=target_tensor, paths=img_path, fname=os.path.join(cur_path, fname))
+                # res = plot_images(images=img_tensor, targets=target_tensor, paths=img_path, fname=os.path.join(cur_path, fname))
                 writer.add_image(fname, res, dataformats='HWC', global_step=epoch)
                 # tb_writer.add_graph(model, imgs)  # add model to tensorboard
 
@@ -360,14 +360,14 @@ if __name__ == '__main__':
         write_to_file(s, log_file_path)
 
         ### Update scheduler per epoch
-        scheduler.step()
+        # scheduler.step()
 
         # compute mAP
         results, maps = test.test(cfg,
                                   'cfg/voc.data',
                                   batch_size=batch_size,
                                   img_size=img_size,
-                                  conf_thres=0.05,
+                                  conf_thres=0.01,
                                   iou_thres=0.5,
                                   nms_thres=0.5,
                                   src_txt_path=valid_txt_path,

@@ -82,7 +82,7 @@ def test(cfg,
 
         pbar.set_description(s)
 
-        for batch_idx, pred in enumerate(nms_output):  # detections per image   for *box, conf, _, cls in det: # det: tensor.Size (bs, 7)    box: list
+        for batch_idx, pred in enumerate(nms_output):  # pred: (bs, 7)
             labels = target_tensor[target_tensor[:, 0] == batch_idx, 1:]
             nl = len(labels)  # len of label
             tcls = labels[:, 0].tolist() if nl else []  # target class
@@ -94,12 +94,10 @@ def test(cfg,
                     stats.append(([], torch.Tensor(), torch.Tensor(), tcls))
                 continue
 
-            # Append to text file
-            # with open('test.txt', 'a') as file:
-            #    [file.write('%11.5g' * 7 % tuple(x) + '\n') for x in det]
-
-            # # Clip boxes to image bounds TODO：有必要，因为 label 都是经过clip的，所以如果去掉clip，mAP应该会有所降低
+            # # Clip boxes to image bounds   TODO：有必要，因为 label 都是经过clip的，所以如果去掉clip，mAP应该会有所降低
             # clip_coords(det, (height, width))
+
+
 
             # Assign all predictions as incorrect
             correct = [0] * len(pred)
