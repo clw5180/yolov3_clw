@@ -16,13 +16,15 @@ from tqdm import tqdm
 import time
 import numpy as np
 import torch.nn as nn
+import cv2
 
 SHOW = True
 SAVE = False
 result_path = './result'
 classes_pred = set()
-if not os.path.exists(result_path):
-    os.makedirs(result_path)
+if os.path.exists(result_path):
+    shutil.rmtree(result_path)
+os.makedirs(result_path)
 
 def test(cfg,
          data,
@@ -71,10 +73,9 @@ def test(cfg,
 
 
     pbar = tqdm(dataloader)
-    for i, (img_tensor, target_tensor, img_path, _) in enumerate(pbar):
+    for i, (img_tensor, target_tensor, img_path, orig_shape) in enumerate(pbar):
         start = time.time()
         img_tensor = img_tensor.to(device)   # (bs, 3, 416, 416)
-        target_tensor = target_tensor.to(device)
 
         # Disable gradients
         with torch.no_grad():
@@ -90,9 +91,14 @@ def test(cfg,
             ################################################
             if pred is None:
                 continue
-            a = pred[:, 0:5]
-            b = pred[:, 6].unsqueeze(1)
-            bboxes_prd = torch.cat((a, b), dim=1).cpu().numpy()
+            bboxes_prd = torch.cat((pred[:, 0:5], pred[:, 6].unsqueeze(1)), dim=1).cpu().numpy()
+            ### clw note: coord transform to origin size(because of resize and so on....) is really important !!!
+
+            bboxes_prd[:, [0, 2]] = bboxes_prd[:, [0, 2]] * orig_shape[batch_idx][1] / img_tensor[batch_idx].size()[2]   # w
+            bboxes_prd[:, [1, 3]] = bboxes_prd[:, [1, 3]] * orig_shape[batch_idx][0] / img_tensor[batch_idx].size()[1]  # h
+
+            ###
+
             for bbox in bboxes_prd:
                 coor = np.array(bbox[:4], dtype=np.int32)
                 score = bbox[4]
@@ -152,7 +158,7 @@ if __name__ == '__main__':
     parser.add_argument('--weights', type=str, default='weights/last.pt', help='path to weights file')
     #parser.add_argument('--weights', type=str, default='weights/yolov3-spp.pt', help='path to weights file')
     parser.add_argument('--img-size', type=int, default=416, help='resize to this size square and detect')
-    parser.add_argument('--conf-thres', type=float, default=0.05, help='object confidence threshold')
+    parser.add_argument('--conf-thres', type=float, default=0.01, help='object confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.5, help='iou threshold for compute mAP')
     parser.add_argument('--nms-thres', type=float, default=0.5, help='iou threshold for non-maximum suppression')
 
