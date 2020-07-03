@@ -2,7 +2,7 @@ from utils.voc_eval import voc_eval
 from utils.utils import select_device
 from model.models import Darknet
 from utils.datasets import VocDataset
-from utils.utils import non_max_suppression, load_classes, ap_per_class, xywh2xyxy, bbox_iou, write_to_file
+from utils.utils import non_max_suppression, load_classes, ap_per_class, xywh2xyxy, bbox_iou, write_to_file, scale_coords
 from utils.parse_config import parse_data_cfg
 from utils.globals import *
 
@@ -18,8 +18,6 @@ import numpy as np
 import torch.nn as nn
 import cv2
 
-SHOW = True
-SAVE = False
 result_path = './result'
 classes_pred = set()
 if os.path.exists(result_path):
@@ -73,7 +71,7 @@ def test(cfg,
 
 
     pbar = tqdm(dataloader)
-    for i, (img_tensor, target_tensor, img_path, orig_shape) in enumerate(pbar):
+    for i, (img_tensor, _, img_path, shapes) in enumerate(pbar):
         start = time.time()
         img_tensor = img_tensor.to(device)   # (bs, 3, 416, 416)
 
@@ -92,12 +90,10 @@ def test(cfg,
             if pred is None:
                 continue
             bboxes_prd = torch.cat((pred[:, 0:5], pred[:, 6].unsqueeze(1)), dim=1).cpu().numpy()
-            ### clw note: coord transform to origin size(because of resize and so on....) is really important !!!
 
-            bboxes_prd[:, [0, 2]] = bboxes_prd[:, [0, 2]] * orig_shape[batch_idx][1] / img_tensor[batch_idx].size()[2]   # w
-            bboxes_prd[:, [1, 3]] = bboxes_prd[:, [1, 3]] * orig_shape[batch_idx][0] / img_tensor[batch_idx].size()[1]  # h
-
-            ###
+            ###### clw note: coord transform to origin size(because of resize and so on....) is really important !!!
+            scale_coords(img_tensor[batch_idx].shape[1:], bboxes_prd, shapes[batch_idx][0], shapes[batch_idx][1])  # to original shape
+            ######
 
             for bbox in bboxes_prd:
                 coor = np.array(bbox[:4], dtype=np.int32)
@@ -151,7 +147,7 @@ if __name__ == '__main__':
     parser.add_argument('--cfg', type=str, default='cfg/voc_yolov3.cfg', help='xxx.cfg file path')
     #parser.add_argument('--cfg', type=str, default='cfg/yolov3-spp.cfg', help='xxx.cfg file path')
     parser.add_argument('--data', type=str, default='cfg/voc.data', help='xxx.data file path')
-    parser.add_argument('--batch-size', type=int, default=64)
+    parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--device', type=str, default='0,1', help='device id (i.e. 0 or 0,1,2,3) ') # 默认单卡
     parser.add_argument('--src-txt-path', type=str, default='./valid.txt', help='saved img_file_paths list')
     parser.add_argument('--dst-path', type=str, default='./output', help='save detect result in this folder')

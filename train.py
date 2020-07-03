@@ -285,7 +285,7 @@ if __name__ == '__main__':
         #             p.requires_grad = False if (epoch < 3) else True
 
 
-        for i, (img_tensor, target_tensor, img_path, _) in enumerate(dataloader):
+        for i, (img_tensor, target_tensor, img_path) in enumerate(dataloader):
 
             # 调整学习率，进行warm up和学习率衰减
             ## Update scheduler per batch
@@ -349,7 +349,7 @@ if __name__ == '__main__':
                 fname = 'train_batch0.jpg' # filename
                 cur_path = os.getcwd()
                 # res = plot_images(images=img_tensor, targets=target_tensor, paths=img_path, fname=os.path.join(cur_path, fname))
-                writer.add_image(fname, res, dataformats='HWC', global_step=epoch)
+                # writer.add_image(fname, res, dataformats='HWC', global_step=epoch)
                 # tb_writer.add_graph(model, imgs)  # add model to tensorboard
 
             # end batch ------------------------------------------------------------------------------------------------

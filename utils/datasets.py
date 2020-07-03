@@ -22,8 +22,8 @@ class VocDataset(Dataset):  # for training/testing
     适用目录结构：cat1.txt放置在和cat1.jpg同一文件夹下，cat1.txt是由当前目录下的cat1.xml通过 xml2txt.py脚本转化而来
     '''
     def __init__(self, txt_path, img_size, with_label, is_training):  # clw note: (1) with_label=True, is_training=True -> train
-                                                                      #           (2) with_label=True, is_training=False -> val(no aug)
-                                                                      #           (3) with_label=False, is_training=False -> test
+                                                                      #           (2) with_label=True, is_training=False -> test(no aug)
+                                                                      #           (3) with_label=False, is_training=False -> detect
         # 1、获取所有图片路径，存入 list
         with open(txt_path, 'r') as f:
             self.img_file_paths = [x.replace(os.sep, '/') for x in f.read().splitlines()]
@@ -40,6 +40,7 @@ class VocDataset(Dataset):  # for training/testing
         self.with_label = with_label
 
         # 3、transforms and data aug，如必须要做的 Resize(), ToTensor()
+        self.training = is_training
         self.transforms = build_transforms(img_size, is_training)
 
     def __len__(self):
@@ -64,24 +65,24 @@ class VocDataset(Dataset):  # for training/testing
         img = cv2.imread(img_path)
         if img is None:
             raise Exception('Read image error: %s not exist !' % img_path)
-        orig_h, orig_w = img.shape[:2]
-        img0 = img.copy()                  # 拷贝一份作为原始副本，便于返回，因为接下来transforms连续操作会改变img
+
 
         # PIL 读取
         # img = Image.open(img_path)  # 注意是 img_pil格式
         # orig_w, orig_h = img_pil.size
 
 
-        if self.with_label:
-            img_tensor, label_tensor = self.transforms(img, labels)  # 对 img 和 label 都要做相应的变换
-        else:
-            img_tensor = self.transforms(img)  # ToTensor 已经转化为 3x416x416 并且完成归一化
+        if self.with_label and self.training:  # train
+            img_tensor, label_tensor, _ = self.transforms(img, labels)  # 对 img 和 label 都要做相应的变换
+            return img_tensor, label_tensor, img_path
 
-        # 2、根据 index 读取相应标签
-        if self.with_label:  # 训练
-            return img_tensor, label_tensor, img_path, (orig_h, orig_w)
-        else:     # 测试
-            return img_tensor, img0, img_name
+        elif self.with_label and not self.training:  # test
+            img_tensor, label_tensor, shape = self.transforms(img, labels)   # clw note: shape need to convert pred coord -> orig coord, then compute mAP
+            return img_tensor, label_tensor, img_path, shape                 #           don't support RandomCrop, RandomAffline... for test, because of the coord convert is not easy
+
+        else:   # detect
+            img_tensor, shape = self.transforms(img)
+            return img_tensor, img_path, shape
 
     @staticmethod
     def train_collate_fn(batch):

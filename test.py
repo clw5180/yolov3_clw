@@ -13,8 +13,6 @@ import time
 import numpy as np
 import torch.nn as nn
 
-SHOW = True
-SAVE = False
 
 def test(cfg,
          data,
@@ -67,7 +65,7 @@ def test(cfg,
 
 
     pbar = tqdm(dataloader)
-    for i, (img_tensor, target_tensor, img_path, _) in enumerate(pbar):
+    for i, (img_tensor, target_tensor, img_path, shape) in enumerate(pbar):
         start = time.time()
         img_tensor = img_tensor.to(device)   # (bs, 3, 416, 416)
         target_tensor = target_tensor.to(device)

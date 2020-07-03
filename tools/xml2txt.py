@@ -14,15 +14,16 @@ from utils.utils import load_classes
 train_path = '/home/user/dataset/voc2007/train'
 #train_path = '/home/clwclw/dataset/voc2007/train'
 #train_path = None
-
 valid_path = '/home/user/dataset/voc2007/val'
 #valid_path = '/home/clwclw/dataset/voc2007/val'
 test_path = None
 class_name_path = '../cfg/voc.names' # 数据集类别名 list， 如 voc.names   coco.names
+img_format = 'jpg'
+val_with_difficult = True
 
 
 # 从xml文件中提取bounding box信息和w,h信息, 格式为[[x_min, y_min, x_max, y_max, name]]
-def parse_xml(xml_path):
+def parse_xml(xml_path, with_difficult=True):
     tree = ET.parse(xml_path)		
     root = tree.getroot()
 
@@ -34,6 +35,10 @@ def parse_xml(xml_path):
     objs = root.findall('object')
     coords = list()
     for ix, obj in enumerate(objs):
+        if not with_difficult:  # remove difficult=1 obj
+            difficult = obj.find('difficult').text
+            if difficult == '1':
+                continue
         name = obj.find('name').text
         box = obj.find('bndbox')
         x_min = int(box.find('xmin').text)
@@ -44,9 +49,9 @@ def parse_xml(xml_path):
     return filename, (width, height), coords
 
 
-def write_single_label(xml_filepath, class2indice):
+def write_single_label(xml_filepath, class2indice, with_difficult=True):
     "输入原xml的绝对路径"
-    _, (width, height), coords = parse_xml(xml_filepath)
+    _, (width, height), coords = parse_xml(xml_filepath, with_difficult)
 
     #"56 0.855422 0.633625 0.087594 0.208542"    
     label = xml_filepath[:-4] + ".txt"
@@ -76,6 +81,11 @@ def xml2txt(image_path,output_txt_file_path, class2indice, append = False ,fix_J
     '''  
     abs_image_path = os.path.abspath( image_path )
 
+    if 'val' in image_path:
+        with_difficult = val_with_difficult
+    else:
+        with_difficult = True
+
     # check if there is *.JPG 
     if fix_JPG:            
         for pos,_,fs in os.walk( abs_image_path ):
@@ -83,20 +93,17 @@ def xml2txt(image_path,output_txt_file_path, class2indice, append = False ,fix_J
                 if f.lower().endswith('jpg') and not f.endswith('jpg') :
                     src = os.path.join(pos,f)
                     des = os.path.join( pos, f[:-3] + "jpg" )
-                    shutil.move(src,des)
-                    
+                    shutil.move(src, des)
+
+    # write to .txt
     lines = []
     for pos,_,fs in os.walk( abs_image_path ):
         for xml_file in fs:
             if xml_file.endswith('xml'):
-                jpg_imgf = os.path.join(pos, xml_file[:-3] + "jpg")
-                png_imgf = os.path.join(pos, xml_file[:-3] + "png")
+                jpg_imgf = os.path.join(pos, xml_file[:-3] + img_format)
                 if os.path.exists( jpg_imgf ) : 
-                    write_single_label( os.path.join(pos, xml_file) , class2indice )
+                    write_single_label( os.path.join(pos, xml_file) , class2indice, with_difficult)
                     lines.append( jpg_imgf )
-                elif  os.path.exists( png_imgf ): 
-                    write_single_label( os.path.join(pos, xml_file) , class2indice )
-                    lines.append( png_imgf )
 
     if append:
         open(output_txt_file_path, 'a').write( '\n'.join(lines) )
@@ -105,6 +112,7 @@ def xml2txt(image_path,output_txt_file_path, class2indice, append = False ,fix_J
 
     print('images number: ', len(lines))
     pass
+
 
 def cloth_train_data(train_path=None, valid_path = None, test_path=None):
     ###

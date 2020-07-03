@@ -1125,3 +1125,28 @@ def weights_init_normal(m):
 
         # torch.nn.init.normal_(m.weight.data, 1.0, 0.02)
         # torch.nn.init.constant_(m.bias.data, 0.0)
+
+def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
+    # Rescale coords (xyxy) from img1_shape to img0_shape
+    if ratio_pad is None:  # calculate from img0_shape     # clw note:  resize
+        ### clw modify
+        coords[:, [0, 2]] =  coords[:, [0, 2]] * img0_shape[1] / img1_shape[1]
+        coords[:, [1, 3]] =  coords[:, [1, 3]] * img0_shape[0] / img1_shape[0]
+
+    else:  # clw note:  letterbox
+        gain = ratio_pad[0][0]
+        pad = ratio_pad[1]
+        coords[:, [0, 2]] -= pad[0]  # x padding
+        coords[:, [1, 3]] -= pad[1]  # y padding
+        coords[:, :4] /= gain
+
+    clip_coords(coords, img0_shape)   # clw note: mAP +0.1
+    return coords
+
+def clip_coords(boxes, img_shape):
+
+    # Clip bounding xyxy bounding boxes to image shape (height, width)
+    # boxes[:, [0, 2]] = boxes[:, [0, 2]].clamp(min=0, max=img_shape[1])  # torch:  clip x
+    # boxes[:, [1, 3]] = boxes[:, [1, 3]].clamp(min=0, max=img_shape[0])  #         clip y
+    boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], a_min=0, a_max=img_shape[1])  # numpy:  clip x
+    boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], a_min=0, a_max=img_shape[0])  #         clip y
