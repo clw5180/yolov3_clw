@@ -86,6 +86,14 @@ class VocDataset(Dataset):  # for training/testing
 
     @staticmethod
     def train_collate_fn(batch):
+        img, label, path = list(zip(*batch))  # transposed
+        for i, l in enumerate(label):
+            l[:, 0] = i  # add target image index for build_targets()
+        return torch.stack(img, 0), torch.cat(label, 0), path  # TODO：如 batch=4，需要对img进行堆叠
+        # img 堆叠后变成[bs, 3, 416, 416] 多了bs一个维度,   label原本是[5, 5]  [1, 5]，concat后变成 [n, 5]
+
+    @staticmethod
+    def test_collate_fn(batch):
         img, label, path, shapes = list(zip(*batch))  # transposed
         for i, l in enumerate(label):
             l[:, 0] = i  # add target image index for build_targets()
@@ -93,7 +101,7 @@ class VocDataset(Dataset):  # for training/testing
         # img 堆叠后变成[bs, 3, 416, 416] 多了bs一个维度,   label原本是[5, 5]  [1, 5]，concat后变成 [n, 5]
 
     @staticmethod
-    def test_collate_fn(batch):
-        img_tensor, img0, img_name = list(zip(*batch))  # transposed
+    def detect_collate_fn(batch):
+        img_tensor, img_path, shape = list(zip(*batch))  # transposed
         img_tensor = torch.stack(img_tensor, 0)
-        return img_tensor, img0, img_name  # TODO：如 batch=4，需要对img和label进行堆叠
+        return img_tensor, img_path, shape  # TODO：如 batch=4，需要对img和label进行堆叠

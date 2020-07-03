@@ -153,15 +153,17 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
     tcls_all = []
     tx_all, ty_all, th_all, tw_all = [], [], [], []
     obj_mask_all, noobj_mask_all = [], []
+
+
     multi_gpu = type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
     use_all_anchors = True
 
     for i in model.yolo_layers:
         # get number of grid points and anchor vec for this yolo layer
         if multi_gpu:
-            ng, anchor_vec = model.module.module_list[i].ng[0], model.module.module_list[i].anchor_vec
+            ng, anchor_vec, stride = model.module.module_list[i].ng[0], model.module.module_list[i].anchor_vec, model.module.module_list[i].stride
         else:
-            ng, anchor_vec = model.module_list[i].ng[0], model.module_list[i].anchor_vec
+            ng, anchor_vec, stride = model.module_list[i].ng[0], model.module_list[i].anchor_vec, model.module.module_list[i].stride
 
         na = len(anchor_vec)
         obj_mask = ByteTensor(bs, na, ng, ng).fill_(0)   # clw note: if nt's range from (0~63), the batch_size is 64.
@@ -174,7 +176,7 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
 
         # iou of targets-anchors
         t, a = targets, []
-        gwh = t[:, 4:6] * ng
+        gwh = t[:, 4:6] * ng  # (171, 2)
         gxy = t[:, 2:4] * ng  # grid x, y
         gxywh = torch.cat((gxy, gwh), 1)  # clw note: TODO
 
@@ -193,6 +195,8 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
 
             else:  # use best anchor only
                 _, a = iou.max(0)  # best iou and anchor,  for example: nt=201, a:(201,), iou:(201,)
+
+        gxywh[:, :4] *= stride
 
         # Indices
         b, c = t[:, :2].long().t()  # target image, class
@@ -231,16 +235,41 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
             assert c.max() <= model.nc, 'Model accepts %g classes labeled from 0-%g, however you supplied a label %g. See \
                                         https://github.com/ultralytics/yolov3/wiki/Train-Custom-Data' % (model.nc, model.nc - 1, c.max())
 
-
     #return tcls, tbox, indices, av
     return obj_mask_all, noobj_mask_all, tx_all, ty_all, tw_all, th_all, tcls_all
 
 
 ### new version
-def compute_loss(p, targets, model):  # p:predictions，一个list包含3个tensor，维度(1,3,13,13,25), (1,3,26,26,25)....
-    #ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor  # clw note: 暂时不支持cpu，太慢
+def compute_loss(p, p_box, targets, gt_boxs, model):  # p:predictions，一个list包含3个tensor，维度(bs,3,13,13,25), (bs,3,26,26,25)....
+                                             # p_box: 一个list包含3个tensor，维度(bs,3,13,13,4), (bs,3,26,26,4)....
+                                             # targets: (n, 6)
+    ###### clw modify
+    gts = []  # list, len: bs
+    pre_batch_idx = 0
+    gt_box = []
+    for i, target in enumerate(gt_boxs):
+        if gt_boxs[i][0] != pre_batch_idx:
+            pre_batch_idx += 1
+            gts.append(gt_box)
+            gt_box = []
+        gt_box.append(target[2:])
+    gts.append(gt_box)   # final batch
 
-    lcls, lbox, lobj = torch.cuda.FloatTensor([0]), torch.cuda.FloatTensor([0]), torch.cuda.FloatTensor([0])
+    # print(len(gt_all))
+    gt_max_len = -1
+    for i in range(len(gts)):
+        # print(i, len(gt_all[i]))
+        if len(gts[i]) > gt_max_len:
+            gt_max_len = len(gts[i])
+    gt_all = torch.cuda.FloatTensor(len(gts), gt_max_len ,4).fill_(0)
+
+    for i in range(len(gts)):
+        for j in range(len(gts[i])):
+            #print(i, j)
+            gt_all[i, j] = gts[i][j]
+    ######
+
+    lcls, lbox, lobj = torch.cuda.FloatTensor([0]), torch.cuda.FloatTensor([0]), torch.cuda.FloatTensor([0])  #ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor  # clw note: 暂时不支持cpu，太慢
     #tcls, tbox, indices, anchor_vec = build_targets(model, targets)
     bs = p[0].size(0)  # clw note: batchsize
     obj_mask_all, noobj_mask_all, tx_all, ty_all, tw_all, th_all, tcls_all = build_targets(model, bs, targets)
@@ -257,10 +286,24 @@ def compute_loss(p, targets, model):  # p:predictions，一个list包含3个tens
     for i, pi in enumerate(p):  # layer index: 0,1,2   layer predictions: (bs,3,13,13,25), (bs,3,26,26,25), (bs,3,52,52,25)
         # pi:(bs, 3, 13, 13, 25)
         #b, a, gj, gi = indices[i]  # target image idx, anchor idx, gt的x_ctr和y_ctr所在cell左上角坐标，整数
-        obj_mask = obj_mask_all[i]
+        obj_mask = obj_mask_all[i]  # obj_mask:(64, 3, 13, 13)    obj_mask.sum: 239
         noobj_mask = noobj_mask_all[i]
         # obj_mask = obj_mask_all[i].bool()   # clw note: for pytorch 1.4, have UserWarning: indexing with dtype torch.uint8 is now deprecated, please use a dtype torch.bool instead
         # noobj_mask = noobj_mask_all[i].bool()
+
+        ###### clw note: borrowed from Peter's version,
+        gt_boxes = gt_all  # (64, n, 4)   n is 150 in Peter's yolov3, there is the most gt num in a batch, such as 16
+        p_boxes = p_box[i]   # (64, 3, 13, 13, 4)
+        p_boxes = p_boxes.float()
+        a = p_boxes.unsqueeze(4)  # (64, 3, 13, 13, 1, 4)
+        b = gt_boxes.unsqueeze(1).unsqueeze(1).unsqueeze(1)  # (64, 1, 1, 1, n, 4)
+        iou = iou_xywh_torch(a, b)  # (64, 3, 13, 13, n)
+        #iou_max = iou.max(-1, keepdim=True)[0]  # (64, 3, 13, 13, 1)
+        iou_max = iou.max(-1)[0]  # clw modify:  (64, 3, 13, 13)
+        #noobj_mask = noobj_mask * (iou_max < 0.5).float()   # noobj_mask: (64, 3, 13, 13)
+        noobj_mask = noobj_mask * (iou_max < 0.5)  # clw modify
+        ######
+
         tx = tx_all[i][obj_mask]  # 需要把gt所在的那个grid cell的预测结果拿出来
         ty = ty_all[i][obj_mask]
         tw = tw_all[i][obj_mask]
@@ -270,7 +313,6 @@ def compute_loss(p, targets, model):  # p:predictions，一个list包含3个tens
         # Compute losses
         # TODO :如果有 gt，也就是不是纯负样本的图，那么需要计算 （1）位置损失  （2）分类损失
         #ps = pi[b, a, gj, gi]
-        nt = obj_mask.size(0)  # number of targets
 
         px = torch.sigmoid(pi[obj_mask][:, 0])  # clw note：用于计算损失的是σ(tx),σ(ty),和 tw 和 th (因为gt映射到tx^时，sigmoid反函数不好求，所以不用tx和ty)
         py = torch.sigmoid(pi[obj_mask][:, 1])
@@ -528,9 +570,9 @@ def bbox_iou(box1, box2, x1y1x2y2=True, GIoU=False, DIoU=False, CIoU=False):
 
     return iou
 
-'''
-### 多个框和多个框算iou
-def bbox_iou(box1, box2, x1y1x2y2=True):
+
+### clw note:多个框和多个框算iou
+def bboxes_iou(box1, box2, x1y1x2y2=True):
     """
     Returns the IoU of two bounding boxes
     """
@@ -561,18 +603,17 @@ def bbox_iou(box1, box2, x1y1x2y2=True):
     iou = inter_area / (b1_area + b2_area - inter_area + 1e-16)
 
     return iou
+# Traceback (most recent call last):
+#   File "train.py", line 363, in <module>
+#     log_file_path = log_file_path)
+#   File "/home/user/yolov3_clw/test.py", line 80, in test
+#     nms_output = non_max_suppression(output, conf_thres, nms_thres)
+#   File "/home/user/yolov3_clw/utils/utils.py", line 584, in non_max_suppression
+#     i = bbox_iou(dc[0], dc) > nms_thres  # iou with other boxes
+#   File "/home/user/yolov3_clw/utils/utils.py", line 406, in bbox_iou
+#     b1_x1, b1_y1, b1_x2, b1_y2 = box1[:, 0], box1[:, 1], box1[:, 2], box1[:, 3]
+# IndexError: too many indices for tensor of dimension 1
 
-Traceback (most recent call last):
-  File "train.py", line 363, in <module>
-    log_file_path = log_file_path)
-  File "/home/user/yolov3_clw/test.py", line 80, in test
-    nms_output = non_max_suppression(output, conf_thres, nms_thres)
-  File "/home/user/yolov3_clw/utils/utils.py", line 584, in non_max_suppression
-    i = bbox_iou(dc[0], dc) > nms_thres  # iou with other boxes
-  File "/home/user/yolov3_clw/utils/utils.py", line 406, in bbox_iou
-    b1_x1, b1_y1, b1_x2, b1_y2 = box1[:, 0], box1[:, 1], box1[:, 2], box1[:, 3]
-IndexError: too many indices for tensor of dimension 1
-'''
 
 def bboxes_anchor_iou(box1, anchors_wh, x1y1x2y2=True):
     anchor_xy = box1[:, :2].floor() + 0.5  # (14, 2)
@@ -609,6 +650,35 @@ def bboxes_anchor_iou(box1, anchors_wh, x1y1x2y2=True):
     iou = inter_area / (b1_area + b2_area - inter_area + 1e-16)
 
     return iou
+
+
+def iou_xywh_torch(boxes1, boxes2):  # borrowed from Peter
+    """
+    :param boxes1: boxes1和boxes2的shape可以不相同，但是需要满足广播机制，且需要是Tensor
+    :param boxes2: 且需要保证最后一维为坐标维，以及坐标的存储结构为(x, y, w, h)
+    :return: 返回boxes1和boxes2的IOU，IOU的shape为boxes1和boxes2广播后的shape[:-1]
+    """
+    boxes1_area = boxes1[..., 2] * boxes1[..., 3]
+    boxes2_area = boxes2[..., 2] * boxes2[..., 3]
+
+    # 分别计算出boxes1和boxes2的左上角坐标、右下角坐标
+    # 存储结构为(xmin, ymin, xmax, ymax)，其中(xmin,ymin)是bbox的左上角坐标，(xmax,ymax)是bbox的右下角坐标
+    boxes1 = torch.cat([boxes1[..., :2] - boxes1[..., 2:] * 0.5,
+                        boxes1[..., :2] + boxes1[..., 2:] * 0.5], dim=-1)
+    boxes2 = torch.cat([boxes2[..., :2] - boxes2[..., 2:] * 0.5,
+                        boxes2[..., :2] + boxes2[..., 2:] * 0.5], dim=-1)
+
+    # 计算出boxes1与boxes1相交部分的左上角坐标、右下角坐标
+    left_up = torch.max(boxes1[..., :2], boxes2[..., :2])
+    right_down = torch.min(boxes1[..., 2:], boxes2[..., 2:])
+
+    # 因为两个boxes没有交集时，(right_down - left_up) < 0，所以maximum可以保证当两个boxes没有交集时，它们之间的iou为0
+    inter_section = torch.max(right_down - left_up, torch.zeros_like(right_down))
+    inter_area = inter_section[..., 0] * inter_section[..., 1]
+    union_area = boxes1_area + boxes2_area - inter_area
+    IOU = 1.0 * inter_area / union_area
+    return IOU
+
 
 
 # modify by clw

@@ -306,14 +306,21 @@ if __name__ == '__main__':
             img_tensor = img_tensor.to(device)
             target_tensor = target_tensor.to(device)
 
+            img_size = img_tensor.size()[2]  # TODO
+            gt_box = target_tensor[:, :6].clone()
+            gt_box[:, 2:] *= img_size
+            gt_box[:, 2] = gt_box[:, 2] - gt_box[:, 4] / 2
+            gt_box[:, 3] = gt_box[:, 3] - gt_box[:, 5] / 2
+            gt_box[:, 4] = gt_box[:, 2] + gt_box[:, 4]
+            gt_box[:, 5] = gt_box[:, 3] + gt_box[:, 5]
 
             ### 训练过程主要包括以下几个步骤：
             # (1) 前传
             #print('img_tensor:', img_tensor[0][1][208][208])
-            pred = model(img_tensor)
+            p, p_box = model(img_tensor)  # tuple, have 3 tensors; tensor[0]: (64, 3, 13, 13, 4)
 
             # (2) 计算损失
-            loss, loss_items = compute_loss(pred, target_tensor, model)
+            loss, loss_items = compute_loss(p, p_box, target_tensor, gt_box, model)
             if not torch.isfinite(loss):
                raise Exception('WARNING: non-finite loss, ending training ', loss_items)
 

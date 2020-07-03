@@ -68,8 +68,10 @@ class Darknet(nn.Module):
 
         # output 是 yolo_layer的输出，注意 self.training的值会影响输出的东西
         if self.training:
-            return output  # list，包含三个tensor，维度(1, 3, 13, 13, 25)，(1, 3, 26, 26, 25)，(1, 3, 52, 52, 25)，其实就是tx,ty,tx,yw
+            #return output  # list，包含三个tensor，维度(1, 3, 13, 13, 25)，(1, 3, 26, 26, 25)，(1, 3, 52, 52, 25)，其实就是tx,ty,tx,yw
                            #  3代表一个yolo_layer含有的anchor数量
+            p, p_box = list(zip(*output))
+            return p, p_box  # clw note: TODO
         else:
             io, p = list(zip(*output))  # output: list，包含三个tuple, 每个tuple有两个元素，0的维度是(1, 507, 25), 1的维度是(1, 3, 13, 13, 25)
                                         # io: inference output, 也就是yolo_layer的输出经过了 sigmoid 和 exp 后加上当前cell相对于feature map左上角的坐标，得到的feature map的真实坐标，然后*= self.stride得到映射到原图的真实坐标
@@ -205,27 +207,26 @@ class YOLOLayer(nn.Module):
         # https://discuss.pytorch.org/t/in-pytorch-0-4-is-it-recommended-to-use-reshape-than-view-when-it-is-possible/17034
         #p = p.reshape(bs, self.na, self.nc + 5, self.ny, self.nx).permute(0, 1, 3, 4, 2)  # prediction
 
+        io = p.clone()  # io: inference output;   inference need actual size's xywh, maybe train also use
+        io[..., 0:2] = torch.sigmoid(io[..., 0:2]) + self.grid_xy  # xy
+        io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh  # wh yolo method
+        io[..., :4] *= self.stride
         if self.training:
-            return p
+            #return p   # clw note: old version
+            ### xywh -> xyxy
+            io[..., 0] = io[..., 0] - io[..., 2]/2
+            io[..., 1] = io[..., 1] - io[..., 3]/2
+            io[..., 2] = io[..., 0] + io[..., 2]
+            io[..., 3] = io[..., 1] + io[..., 3]
+            return p, io[..., :4]
+
         else:  # inference
-            # s = 1.5  # scale_xy  (pxy = pxy * s - (s - 1) / 2)
-            io = p.clone()  # inference output
-            io[..., 0:2] = torch.sigmoid(io[..., 0:2]) + self.grid_xy  # xy
-            io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh  # wh yolo method
-            # io[..., 2:4] = ((torch.sigmoid(io[..., 2:4]) * 2) ** 3) * self.anchor_wh  # wh power method
-            io[..., :4] *= self.stride
-
-            #if 'default' in self.arc:  # seperate obj and cls
-                #torch.sigmoid_(io[..., 4:])
-                #torch.sigmoid_(io[..., 4])
-
             torch.sigmoid_(io[..., 4:])    # TODO
 
             if self.nc == 1:
                 io[..., 5] = 1  # single-class model https://github.com/ultralytics/yolov3/issues/235
 
-            # reshape from [1, 3, 13, 13, 85] to [1, 507, 85]
-            return io.view(bs, -1, 5 + self.nc), p
+            return io.view(bs, -1, 5 + self.nc), p  # io reshape from [1, 3, 13, 13, 85] to [1, 507, 85]
 
 
 def get_yolo_layers(model):
