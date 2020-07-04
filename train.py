@@ -41,6 +41,7 @@ from utils.utils import compute_loss, load_darknet_weights, write_to_file, print
 import os
 import time
 import test
+import test2
 import torch.nn as nn
 import torch.distributed as dist  #   clw note: TODO
 from torch.utils.tensorboard import SummaryWriter
@@ -91,7 +92,7 @@ if __name__ == '__main__':
     #parser.add_argument('--weights', type=str, default='', help='path to weights file')
     #parser.add_argument('--weights', type=str, default='', help='path to weights file')
     parser.add_argument('--img-size', type=int, default=416, help='resize to this size square and detect')
-    parser.add_argument('--epochs', type=int, default=20)
+    parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--batch-size', type=int, default=64)  # effective bs = batch_size * accumulate = 16 * 4 = 64
     #parser.add_argument('--batch-size', type=int, default=16)
     opt = parser.parse_args()
@@ -309,10 +310,6 @@ if __name__ == '__main__':
             img_size = img_tensor.size()[2]  # TODO
             gt_box = target_tensor[:, :6].clone()
             gt_box[:, 2:] *= img_size
-            gt_box[:, 2] = gt_box[:, 2] - gt_box[:, 4] / 2
-            gt_box[:, 3] = gt_box[:, 3] - gt_box[:, 5] / 2
-            gt_box[:, 4] = gt_box[:, 2] + gt_box[:, 4]
-            gt_box[:, 5] = gt_box[:, 3] + gt_box[:, 5]
 
             ### 训练过程主要包括以下几个步骤：
             # (1) 前传
@@ -371,23 +368,19 @@ if __name__ == '__main__':
 
         # compute mAP
         results, maps = test.test(cfg,
-                                  'cfg/voc.data',
-                                  batch_size=batch_size,
-                                  img_size=img_size,
-                                  conf_thres=0.01,
-                                  iou_thres=0.5,
-                                  nms_thres=0.5,
-                                  src_txt_path=valid_txt_path,
-                                  dst_path='./output',
-                                  weights=None,
-                                  model=model,
-                                  log_file_path = log_file_path)
+        #test2.test(cfg,
+                  'cfg/voc.data',
+                  batch_size=batch_size,
+                  img_size=img_size,
+                  conf_thres=0.01,
+                  iou_thres=0.5,
+                  nms_thres=0.5,
+                  src_txt_path=valid_txt_path,
+                  dst_path='./output',
+                  weights=None,
+                  model=model,
+                  log_file_path = log_file_path)
 
-        # Tensorboard
-        tags = ['train/giou_loss', 'train/obj_loss', 'train/cls_loss',
-                'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/F1']
-        for x, tag in zip(list(mloss[:-1]) + list(results), tags):
-            writer.add_scalar(tag, x, epoch)
 
         # save model 保存模型
         chkpt = {'epoch': epoch,

@@ -47,12 +47,12 @@ def test(cfg,
     model.to(device).eval()
 
     # 2、加载数据集
-    valid_dataset = VocDataset(src_txt_path, img_size, with_label=True, is_training=False)
-    dataloader = DataLoader(valid_dataset,
+    test_dataset = VocDataset(src_txt_path, img_size, with_label=True, is_training=False)
+    dataloader = DataLoader(test_dataset,
                             batch_size=batch_size,
                             shuffle=False,
                             num_workers=8,    # TODO
-                            collate_fn=valid_dataset.train_collate_fn,   # TODO
+                            collate_fn=test_dataset.test_collate_fn,   # TODO
                             pin_memory=True)
 
     # 3、预测，前向传播

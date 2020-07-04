@@ -213,11 +213,6 @@ class YOLOLayer(nn.Module):
         io[..., :4] *= self.stride
         if self.training:
             #return p   # clw note: old version
-            ### xywh -> xyxy
-            io[..., 0] = io[..., 0] - io[..., 2]/2
-            io[..., 1] = io[..., 1] - io[..., 3]/2
-            io[..., 2] = io[..., 0] + io[..., 2]
-            io[..., 3] = io[..., 1] + io[..., 3]
             return p, io[..., :4]
 
         else:  # inference
