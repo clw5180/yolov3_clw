@@ -21,11 +21,11 @@ def test(cfg,
          conf_thres,
          iou_thres,
          nms_thres,
-         src_txt_path='./valid.txt',
-         dst_path='./output',
-         weights=None,
-         model=None,
-         log_file_path='log.txt'):
+         src_txt_path,
+         dst_path,
+         weights,
+         log_file_path,
+         model=None):
 
     # 0、初始化一些参数
     if not os.path.exists(dst_path):
@@ -34,17 +34,19 @@ def test(cfg,
     nc = int(data['classes'])  # number of classes
     names = load_classes(data['names'])
 
+
     # 1、加载网络
     if model is None:
-        device = select_device(opt.device)
         model = Darknet(cfg)
         if weights.endswith('.pt'):      # TODO: .weights权重格式
-            model.load_state_dict(torch.load(weights)['model'])  # TODO：map_location=device ？
+            model.load_state_dict(torch.load(weights)['model']) # 20200704_50epoch_modify_noobj   # TODO：map_location=device ？
         if torch.cuda.device_count() > 1:
             model = nn.DataParallel(model)  # clw note: 多卡
+        device = select_device(opt.device)
     else:
         device = next(model.parameters()).device  # get model device
     model.to(device).eval()
+
 
     # 2、加载数据集
     test_dataset = VocDataset(src_txt_path, img_size, with_label=True, is_training=False)
@@ -182,14 +184,17 @@ def test(cfg,
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--cfg', type=str, default='cfg/voc_yolov3.cfg', help='xxx.cfg file path')
+    #parser.add_argument('--cfg', type=str, default='cfg/voc_yolov3-spp.cfg', help='xxx.cfg file path')
     #parser.add_argument('--cfg', type=str, default='cfg/yolov3-spp.cfg', help='xxx.cfg file path')
     parser.add_argument('--data', type=str, default='cfg/voc.data', help='xxx.data file path')
-    parser.add_argument('--batch-size', type=int, default=64)
-    parser.add_argument('--device', type=str, default='0,1', help='device id (i.e. 0 or 0,1,2,3) ') # 默认单卡
+    parser.add_argument('--batch-size', type=int, default=1)
+    parser.add_argument('--device', type=str, default='0', help='device id (i.e. 0 or 0,1,2,3) ') # 默认单卡
     parser.add_argument('--src-txt-path', type=str, default='./valid.txt', help='saved img_file_paths list')
     parser.add_argument('--dst-path', type=str, default='./output', help='save detect result in this folder')
-    parser.add_argument('--weights', type=str, default='weights/last.pt', help='path to weights file')
-    #parser.add_argument('--weights', type=str, default='weights/yolov3-spp.pt', help='path to weights file')
+    #parser.add_argument('--weights', type=str, default='weights/last.pt', help='path to weights file')
+    parser.add_argument('--weights', type=str, default='weights/20200704_50epoch_modify_noobj/last.pt', help='path to weights file')
+    #parser.add_argument('--weights', type=str, default='weights/last.pt', help='path to weights file')
+    #parser.add_argument('--weights', type=str, default='weights/yolov3.pt', help='path to weights file')
     parser.add_argument('--img-size', type=int, default=416, help='resize to this size square and detect')
     parser.add_argument('--conf-thres', type=float, default=0.01, help='object confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.5, help='iou threshold for compute mAP')
@@ -208,5 +213,5 @@ if __name__ == '__main__':
              opt.nms_thres,
              opt.src_txt_path,
              opt.dst_path,
-             opt.weights
-             )
+             opt.weights,
+             log_file_path=None)

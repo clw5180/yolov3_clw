@@ -45,7 +45,7 @@ import test2
 import torch.nn as nn
 import torch.distributed as dist  #   clw note: TODO
 from torch.utils.tensorboard import SummaryWriter
-from utils.globals import *
+from utils.globals import log_file_path, log_folder, model_save_path
 from utils.custom_lr_scheduler import adjust_learning_rate
 import math
 
@@ -77,7 +77,7 @@ if __name__ == '__main__':
     # parser.add_argument('--cfg', type=str, default='cfg/resnet18.cfg', help='xxx.cfg file path')
     # parser.add_argument('--cfg', type=str, default='cfg/resnet50.cfg', help='xxx.cfg file path')
     # parser.add_argument('--cfg', type=str, default='cfg/resnet101.cfg', help='xxx.cfg file path')
-    #parser.add_argument('--cfg', type=str, default='cfg/voc_yolov3-spp.cfg', help='xxx.cfg file path')
+    # parser.add_argument('--cfg', type=str, default='cfg/voc_yolov3-spp.cfg', help='xxx.cfg file path')
     parser.add_argument('--cfg', type=str, default='cfg/voc_yolov3.cfg', help='xxx.cfg file path')
     parser.add_argument('--data', type=str, default='cfg/voc.data', help='xxx.data file path')
     parser.add_argument('--device', default='0,1', help="device id (i.e. 0 or 0,1,2,3) or '' ") # 如果为空，则默认使用所有当前可用的显卡
@@ -93,7 +93,7 @@ if __name__ == '__main__':
     #parser.add_argument('--weights', type=str, default='', help='path to weights file')
     parser.add_argument('--img-size', type=int, default=416, help='resize to this size square and detect')
     parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--batch-size', type=int, default=64)  # effective bs = batch_size * accumulate = 16 * 4 = 64
+    parser.add_argument('--batch-size', type=int, default=1)  # effective bs = batch_size * accumulate = 16 * 4 = 64
     #parser.add_argument('--batch-size', type=int, default=16)
     opt = parser.parse_args()
     print(opt)
@@ -108,7 +108,7 @@ if __name__ == '__main__':
     img_size = opt.img_size
     batch_size = opt.batch_size
     total_epochs = opt.epochs
-    init_seeds(3)
+    init_seeds(0)
     data = parse_data_cfg(opt.data)
     train_txt_path = data['train']
     valid_txt_path = data['valid']
@@ -193,7 +193,7 @@ if __name__ == '__main__':
 
     # 3、设置优化器 和 学习率
     start_epoch = 0
-    optimizer = torch.optim.SGD(model.parameters(), lr=lr0, momentum=momentum, weight_decay=weight_decay, nesterov=True)
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr0, momentum=momentum, weight_decay=weight_decay)  # TODO:  nesterov=Trues
     #optimizer = torch.optim.Adam(model.parameters(), lr=lr0)  # TODO: can't use Adam
 
     ######
@@ -378,16 +378,15 @@ if __name__ == '__main__':
                   src_txt_path=valid_txt_path,
                   dst_path='./output',
                   weights=None,
-                  model=model,
-                  log_file_path = log_file_path)
+                  log_file_path=log_file_path,
+                  model=model)
 
-
-        # save model 保存模型
-        chkpt = {'epoch': epoch,
+        # save model   TODO
+        last_chkpt = {'epoch': epoch,
                  'model': model.module.state_dict() if type(model) is nn.parallel.DistributedDataParallel else model.state_dict(),  # clw note: 多卡
                  'optimizer': optimizer.state_dict()}
 
-        torch.save(chkpt, last_model_path)
+        torch.save(last_chkpt, model_save_path)
 
     print('end')
 

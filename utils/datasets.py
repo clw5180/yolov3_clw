@@ -4,7 +4,10 @@ import numpy as np
 import os
 import cv2
 from .transforms import build_transforms
-from PIL import Image
+import random
+
+from utils.utils import write_to_file
+from utils.globals import log_file_path
 
 '''
 读取自己数据的基本流程：
@@ -42,47 +45,40 @@ class VocDataset(Dataset):  # for training/testing
         # 3、transforms and data aug，如必须要做的 Resize(), ToTensor()
         self.training = is_training
         self.transforms = build_transforms(img_size, is_training)
+        self.img_size = img_size
+        self.mosaic = False
+        if self.training and self.with_label:
+            self.mosaic = True
+            print('using mosaic !')
+            write_to_file('using mosaic !', log_file_path)
 
     def __len__(self):
         return len(self.img_file_paths)
 
-    def __getitem__(self, index):  # 需要得到 img，labels，img_path，orig_size
+    def __getitem__(self, index):
+        # 1、根据 index 读取相应图片，保存图片信息；如果是train/test 还需要读入label
+        if self.with_label:  # train or test
 
-        # 1、根据 index 读取相应图片，保存图片信息；如果是训练还需要读入label
-        img_path = self.img_file_paths[index]
-        img_name = img_path.split('/')[-1]
-        if self.with_label:
-            label_path = self.label_file_paths[index]
-            with open(label_path, 'r') as f:
-                x = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)
-                nL = len(x)
-                if nL:
-                    labels = torch.zeros((nL, 6))  # add one column to save batch_idx
-                                                   # now labels: [ batch_idx, class_idx, x, y, w, h ]
-                    labels[:, 1:] = torch.from_numpy(x) # batch_idx is at the first colume, index 0
+            if self.mosaic:
+                img, label, img_path = load_mosaic(self, index)
+            else:
+                img, label, img_path = load_image(self, index)  # labels: ndarray (n, 5)
+            labels = torch.zeros((len(label), 6))  # add one column to save batch_idx   # now labels: [ batch_idx, class_idx, x, y, w, h ]
+            labels[:, 1:] = torch.from_numpy(label)  # batch_idx is at the first colume, index 0
 
-        # opencv 读取
-        img = cv2.imread(img_path)
-        if img is None:
-            raise Exception('Read image error: %s not exist !' % img_path)
+            if self.training:  # train
+                img_tensor, label_tensor, _ = self.transforms(img, labels)  # 对 img 和 label 都要做相应的变换
+                return img_tensor, label_tensor, img_path
 
-
-        # PIL 读取
-        # img = Image.open(img_path)  # 注意是 img_pil格式
-        # orig_w, orig_h = img_pil.size
-
-
-        if self.with_label and self.training:  # train
-            img_tensor, label_tensor, _ = self.transforms(img, labels)  # 对 img 和 label 都要做相应的变换
-            return img_tensor, label_tensor, img_path
-
-        elif self.with_label and not self.training:  # test
-            img_tensor, label_tensor, shape = self.transforms(img, labels)   # clw note: shape need to convert pred coord -> orig coord, then compute mAP
-            return img_tensor, label_tensor, img_path, shape                 #           don't support RandomCrop, RandomAffline... for test, because of the coord convert is not easy
+            else:  # test
+                img_tensor, label_tensor, shape = self.transforms(img, labels)   # clw note: shape need to convert pred coord -> orig coord, then compute mAP
+                return img_tensor, label_tensor, img_path, shape                 #           don't support RandomCrop, RandomAffline... for test, because of the coord convert is not easy
 
         else:   # detect
+            img, img_path = load_image(self, index)
             img_tensor, shape = self.transforms(img)
             return img_tensor, img_path, shape
+
 
     @staticmethod
     def train_collate_fn(batch):
@@ -105,3 +101,96 @@ class VocDataset(Dataset):  # for training/testing
         img_tensor, img_path, shape = list(zip(*batch))  # transposed
         img_tensor = torch.stack(img_tensor, 0)
         return img_tensor, img_path, shape  # TODO：如 batch=4，需要对img和label进行堆叠
+
+def load_image(self, index):
+    img_path = self.img_file_paths[index]
+    img = cv2.imread(img_path)
+    if img is None:
+        raise Exception('Read image error: %s not exist !' % img_path)
+    if self.with_label:
+        label_path = self.label_file_paths[index]
+        with open(label_path, 'r') as f:
+            labels = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)
+            if len(labels) == 0:
+                raise Exception('Not support pure negative sample yet!')
+        return img, labels, img_path
+    else:
+        return img, img_path
+
+
+def load_mosaic(self, index):
+    # loads images in a mosaic
+
+    labels4 = []
+    s = self.img_size
+    xc, yc = [int(random.uniform(s * 0.5, s * 1.5)) for _ in range(2)]  # mosaic center x, y
+    img4 = np.zeros((s * 2, s * 2, 3), dtype=np.uint8) + 128  # base image with 4 tiles
+    indices = [index] + [random.randint(0, len(self.img_file_paths) - 1) for _ in range(3)]  # 3 additional image indices
+    for i, index in enumerate(indices):
+
+        # Load image
+        img, x, img_path = load_image(self, index)
+        # if '2008_008470' in img_path:
+        #     print('bbb')
+        h, w, _ = img.shape
+
+        # place img in img4
+        if i == 0:  # top left
+            x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
+        #  x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
+        elif i == 1:  # top right
+            x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
+        #  x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
+        elif i == 2:  # bottom left
+            x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(s * 2, yc + h)
+        #  x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, w, min(y2a - y1a, h)
+        elif i == 3:  # bottom right
+            x1a, y1a, x2a, y2a = xc, yc, min(xc + w, s * 2), min(s * 2, yc + h)
+        #  x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
+
+        x1b = int(random.uniform(0, w - (x2a - x1a)))
+        y1b = int(random.uniform(0, h - (y2a - y1a)))
+        padw = x1a - x1b
+        padh = y1a - y1b
+        x2b = x2a - padw
+        y2b = y2a - padh
+
+        img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+
+        # Load labels
+        if x.size > 0:
+            # coord mapping from origin img to mosaic img by adding pad, and convert Normalized xywh to pixel xyxy format
+            labels = x.copy()
+            labels[:, 1] = w * (x[:, 1] - x[:, 3] / 2) + padw
+            labels[:, 2] = h * (x[:, 2] - x[:, 4] / 2) + padh
+            labels[:, 3] = w * (x[:, 1] + x[:, 3] / 2) + padw
+            labels[:, 4] = h * (x[:, 2] + x[:, 4] / 2) + padh
+
+            mask = (labels[:, 3] > x1a) & (labels[:, 1] < x2a) & (labels[:, 4] > y1a) & (labels[:, 2] < y2a)
+            labels = labels[mask]
+            np.clip(labels[:, 1::2], x1b + padw, x2b + padw, out=labels[:, 1::2])
+            np.clip(labels[:, 2::2], y1b + padh, y2b + padh, out=labels[:, 2::2])
+
+            ### clw modify:
+            box_xctr = (labels[:, 1] + labels[:, 3]) / 2 / (2*s)
+            box_yctr = (labels[:, 2] + labels[:, 4]) / 2 / (2*s)
+            box_w = (labels[:, 3] - labels[:, 1]) / (2*s)
+            box_h = (labels[:, 4] - labels[:, 2]) / (2*s)
+
+            labels[:, 1] = box_xctr
+            labels[:, 2] = box_yctr
+            labels[:, 3] = box_w
+            labels[:, 4] = box_h
+
+
+        else:
+            labels = np.zeros((0, 5), dtype=np.float32)
+        labels4.append(labels)
+
+    # Concat/clip labels
+    if len(labels4):
+        labels4 = np.concatenate(labels4, 0)
+        # np.clip(labels4[:, 1:] - s / 2, 0, s, out=labels4[:, 1:])  # use with center crop
+        np.clip(labels4[:, 1:], 0, 2 * s, out=labels4[:, 1:])  # use with random_affine
+
+    return img4, labels4, img_path

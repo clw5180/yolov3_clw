@@ -7,7 +7,7 @@ import cv2
 import random
 import torch.nn as nn
 import matplotlib.pyplot as plt
-from utils.globals import *
+from utils.globals import log_file_path
 
 ####################
 
