@@ -48,6 +48,8 @@ from torch.utils.tensorboard import SummaryWriter
 from utils.globals import log_file_path, log_folder, model_save_path
 from utils.custom_lr_scheduler import adjust_learning_rate
 import math
+import random
+import torch.nn.functional as F
 
 ### 超参数
 lr0 = 3e-3
@@ -307,9 +309,22 @@ if __name__ == '__main__':
             img_tensor = img_tensor.to(device)
             target_tensor = target_tensor.to(device)
 
+
+            ######
+            # Multi-Scale training
+            multi_scale = True
+            if multi_scale:
+                print('using multi_scale !')
+                write_to_file('using multi_scale !', log_file_path)
+                if ni  % 1 == 0:  #  adjust (67% - 150%) every 1 or 10 batches
+                    img_size = random.randrange(10, 19 + 1) * 32
+                ##ns = [math.ceil(x * sf / 32.) * 32 for x in imgs.shape[2:]]  # new shape (stretched to 32-multiple)
+                img_tensor = F.interpolate(img_tensor, size=(img_size, img_size), mode='bilinear', align_corners=False)
+
             img_size = img_tensor.size()[2]  # TODO
             gt_box = target_tensor[:, :6].clone()
             gt_box[:, 2:] *= img_size
+            ######
 
             ### 训练过程主要包括以下几个步骤：
             # (1) 前传

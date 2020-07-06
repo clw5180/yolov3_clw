@@ -44,7 +44,7 @@ class VocDataset(Dataset):  # for training/testing
 
         self.mosaic = False
         if is_training and with_label:
-            self.mosaic = True
+            self.mosaic = False  # clw note: TODO: if use mosaic, remove RandomCrop(), RandomAffine(), LetterBox(img_size), in transforms.py
             if self.mosaic:
                 print('using mosaic !')
                 write_to_file('using mosaic !', log_file_path)
@@ -208,26 +208,34 @@ def load_mosaic(self, index):
         print('Warning: 4 img have 0 gt !!!')
         print('Warning: 4 img have 0 gt !!!')
 
-    # # Augment
-    img4, labels4 = random_affine(img4, labels4,
+    # for example: if border=-416/2=-208, it means remain img size is 832-2*208=416 -> choose a 416*416 from 832x832
+    img, labels = random_affine(img4, labels4,
                                   degrees=3.07,
                                   translate=0.04,
                                   scale=0.06,
                                   shear=0.28,
                                   border=-s // 2)  # border to remove
+    ###### clw add: save the image, for debug
+    # img_out = img.copy()
+    # for box in labels:
+    #     img_out = cv2.rectangle(img, (int(box[1]), int(box[2])), (int(box[3]), int(box[4])), color=(0, 0, 255), thickness=2)  #  # TODO: 如果 box 是tensor 格式，就不需要转int   TODO
+    # i = random.randint(1, 100)
+    # cv2.imwrite('./mosaic_debug{}.jpg'.format(i), img_out)
+    ###
 
     ### clw modify:
-    box_xctr = (labels4[:, 1] + labels4[:, 3]) / 2 / (2 * s)
-    box_yctr = (labels4[:, 2] + labels4[:, 4]) / 2 / (2 * s)
-    box_w = (labels4[:, 3] - labels4[:, 1]) / (2 * s)
-    box_h = (labels4[:, 4] - labels4[:, 2]) / (2 * s)
+    box_xctr = (labels[:, 1] + labels[:, 3])/2 / s
+    box_yctr = (labels[:, 2] + labels[:, 4])/2 / s
+    box_w = (labels[:, 3] - labels[:, 1]) / s
+    box_h = (labels[:, 4] - labels[:, 2]) / s
+    ###
 
-    labels4[:, 1] = box_xctr
-    labels4[:, 2] = box_yctr
-    labels4[:, 3] = box_w
-    labels4[:, 4] = box_h
+    labels[:, 1] = box_xctr
+    labels[:, 2] = box_yctr
+    labels[:, 3] = box_w
+    labels[:, 4] = box_h
 
-    return img4, labels4, img_path
+    return img, labels, img_path
 
 
 def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10, border=0):
