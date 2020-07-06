@@ -30,14 +30,14 @@ from utils import custom_lr_scheduler
 
 import argparse
 from model.models import Darknet
-from utils.utils import select_device, init_seeds, plot_images
+from utils.utils import select_device, init_seeds, plot_images, plot_images2
 from utils.parse_config import parse_data_cfg
 import torch
 import torch.optim.lr_scheduler as lr_scheduler
 from utils.datasets import VocDataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from utils.utils import compute_loss, load_darknet_weights, write_to_file, print_model_biases, weights_init_normal
+from utils.utils import compute_loss, load_darknet_weights, write_to_file, weights_init_normal
 import os
 import time
 import test
@@ -93,7 +93,7 @@ if __name__ == '__main__':
     #parser.add_argument('--weights', type=str, default='', help='path to weights file')
     parser.add_argument('--img-size', type=int, default=416, help='resize to this size square and detect')
     parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--batch-size', type=int, default=1)  # effective bs = batch_size * accumulate = 16 * 4 = 64
+    parser.add_argument('--batch-size', type=int, default=64)  # effective bs = batch_size * accumulate = 16 * 4 = 64
     #parser.add_argument('--batch-size', type=int, default=16)
     opt = parser.parse_args()
     print(opt)
@@ -193,7 +193,7 @@ if __name__ == '__main__':
 
     # 3、设置优化器 和 学习率
     start_epoch = 0
-    optimizer = torch.optim.SGD(model.parameters(), lr=lr0, momentum=momentum, weight_decay=weight_decay)  # TODO:  nesterov=Trues
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr0, momentum=momentum, weight_decay=weight_decay, nesterov=True)  # TODO:  nesterov=True
     #optimizer = torch.optim.Adam(model.parameters(), lr=lr0)  # TODO: can't use Adam
 
     ######
@@ -317,6 +317,10 @@ if __name__ == '__main__':
             p, p_box = model(img_tensor)  # tuple, have 3 tensors; tensor[0]: (64, 3, 13, 13, 4)
 
             # (2) 计算损失
+            ######  clw add: for debug, localize in build_target() first, and can get target size, so catch the same target size there
+            # if target_tensor.size()[0] == 679:
+            #     print('aaa')
+            ######
             loss, loss_items = compute_loss(p, p_box, target_tensor, gt_box, model)
             if not torch.isfinite(loss):
                raise Exception('WARNING: non-finite loss, ending training ', loss_items)
@@ -343,16 +347,17 @@ if __name__ == '__main__':
             s = ('%10s' * 3 + '%10.3g' * 7 + '%10.3gs') % ('%g/%g' % (epoch, total_epochs - 1), '%g/%g' % (i, nb - 1), '%.3gG' % mem, *mloss, len(target_tensor), img_size,  optimizer.param_groups[0]['lr'], time.time()-batch_start)
             #s = ('%10s' * 3 + '%10.3g' * 7 + '%10.3gs') % ('%g/%g' % (epoch, total_epochs - 1), '%g/%g' % (i, nb - 1), '%.3gG' % mem, *mloss, len(target_tensor), img_size,  scheduler.get_lr()[0], time.time()-batch_start)
 
-            #pbar.set_description(s)
-            ### for debug ###
+
             if i % 10 == 0:
                 print(s)
                 
             # Plot
             if epoch == start_epoch  and i == 0:
                 fname = 'train_batch0.jpg' # filename
+                fname2 = 'train_batch00.jpg'
                 cur_path = os.getcwd()
-                # res = plot_images(images=img_tensor, targets=target_tensor, paths=img_path, fname=os.path.join(cur_path, fname))
+                plot_images2(img_tensor, target_tensor, paths=img_path, fname=os.path.join(cur_path, fname2))
+                res = plot_images(images=img_tensor, targets=target_tensor, paths=img_path, fname=os.path.join(cur_path, fname))
                 # writer.add_image(fname, res, dataformats='HWC', global_step=epoch)
                 # tb_writer.add_graph(model, imgs)  # add model to tensorboard
 
@@ -383,8 +388,8 @@ if __name__ == '__main__':
 
         # save model   TODO
         last_chkpt = {'epoch': epoch,
-                 'model': model.module.state_dict() if type(model) is nn.parallel.DistributedDataParallel else model.state_dict(),  # clw note: 多卡
-                 'optimizer': optimizer.state_dict()}
+                      'model': model.module.state_dict() if type(model) is nn.parallel.DistributedDataParallel else model.state_dict(),  # clw note: 多卡
+                      'optimizer': optimizer.state_dict()}
 
         torch.save(last_chkpt, model_save_path)
 

@@ -284,8 +284,6 @@ def train():
             #s = ('%10s' * 3 + '%10.3g' * 7 + '%10.3gs') % ('%g/%g' % (epoch, total_epochs - 1), '%g/%g' % (i, nb - 1), '%.3gG' % mem, *mloss, len(target_tensor), img_size,  optimizer.state_dict()['param_groups'][0]['lr'], time.time()-batch_start)
             s = ('%10s' * 3 + '%10.3g' * 7 + '%10.3gs') % ('%g/%g' % (epoch, total_epochs - 1), '%g/%g' % (i, nb - 1), '%.3gG' % mem, *mloss, len(target_tensor), img_size,  scheduler.get_lr()[0], time.time()-batch_start)
 
-            #pbar.set_description(s)
-            ### for debug ###
             if i % 10 == 0:
                 print(s)
                 

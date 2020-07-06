@@ -2,7 +2,7 @@ import numpy as np
 import cv2
 import torch
 from utils.utils import xyxy2xywh, write_to_file
-from utils.globals import log_file_path, SHOWED_SAMPLE
+from utils.globals import log_file_path, ALREADY_SHOWED_SAMPLE
 import random
 
 def build_transforms(img_size, is_train=False):
@@ -14,9 +14,9 @@ def build_transforms(img_size, is_train=False):
             # RandomAffine(),
 
             RandomHorizontalFilp(),
-            RandomCrop(),
-            RandomAffine(),
-            LetterBox(img_size),    # clw modify
+            #RandomCrop(),
+            #RandomAffine(),
+            #LetterBox(img_size),    # clw modify
             ToTensor()              # clw modify: # ToTensor 已经转化为 3x416x416 并且完成归一化
         ])
     else:
@@ -84,7 +84,7 @@ class RandomHorizontalFilp(object):
         print('using RandomHorizontalFilp !')
         write_to_file('using RandomHorizontalFilp !', log_file_path)
         self.p = p
-        self.showed_sample = SHOWED_SAMPLE
+        self.already_showed_sample = ALREADY_SHOWED_SAMPLE
 
     def __call__(self, data):
         if not isinstance(data, tuple):
@@ -95,11 +95,10 @@ class RandomHorizontalFilp(object):
                 # _, w_img, _ = img.shape
                 # img = np.fliplr(img)
                 img = img[:, ::-1, :]
-                #label[:, 2] = w_img - label[:, 2]
                 label[:, 2] = 1 - label[:, 2]
 
                 ################
-                if not self.showed_sample:
+                if not self.already_showed_sample:
                     img_out = img.copy()
                     boxes = label[:, 2:6]
                     for box in boxes:
@@ -109,7 +108,7 @@ class RandomHorizontalFilp(object):
                         ymax = box[1] * img.shape[0] + box[3] * img.shape[0] / 2
                         img_out = cv2.rectangle(img_out, (xmin, ymin), (xmax, ymax), color=(0, 0, 255))
                     cv2.imwrite('hflip.jpg', img_out)
-                    self.showed_sample = True
+                    self.already_showed_sample = True
                 ################
 
                 return (img, label)
@@ -122,7 +121,7 @@ class RandomCrop(object):
         print('using RandomCrop !')
         write_to_file('using RandomCrop !', log_file_path)
         self.p = p
-        self.showed_sample = SHOWED_SAMPLE
+        self.already_showed_sample = ALREADY_SHOWED_SAMPLE
 
     def __call__(self, data):
         if not isinstance(data, tuple):
@@ -152,7 +151,7 @@ class RandomCrop(object):
                 label[:, 5] = label[:, 5] * h_img / h_img_new
 
                 ################
-                if not self.showed_sample:
+                if not self.already_showed_sample:
                     img_out = img.copy()
                     boxes = label[:, 2:6]
                     for box in boxes:
@@ -162,7 +161,7 @@ class RandomCrop(object):
                         ymax = box[1] * h_img_new + box[3] * h_img_new / 2
                         img_out = cv2.rectangle(img_out, (xmin, ymin), (xmax, ymax), color=(0, 0, 255))
                     cv2.imwrite('crop.jpg', img_out)
-                    self.showed_sample = True
+                    self.already_showed_sample = True
                 ################
 
                 return (img, label)
@@ -175,7 +174,7 @@ class RandomAffine(object):
         print('using RandomAffine !')
         write_to_file('using RandomAffine !', log_file_path)
         self.p = p
-        self.showed_sample = SHOWED_SAMPLE
+        self.already_showed_sample = ALREADY_SHOWED_SAMPLE
 
     def __call__(self, data):
         if not isinstance(data, tuple):
@@ -205,7 +204,7 @@ class RandomAffine(object):
                 label[:, 3] = label[:, 3] + dy / h_img
 
                 ################
-                if not self.showed_sample:
+                if not self.already_showed_sample:
                     img_out = img.copy()
                     boxes = label[:, 2:6]
                     for box in boxes:
@@ -215,7 +214,7 @@ class RandomAffine(object):
                         ymax = box[1] * h_img + box[3] * h_img / 2
                         img_out = cv2.rectangle(img_out, (xmin, ymin), (xmax, ymax), color=(0, 0, 255))
                     cv2.imwrite('affine.jpg', img_out)
-                    self.showed_sample = True
+                    self.already_showed_sample = True
                 ################
 
                 return img, label
@@ -249,7 +248,7 @@ class Resize(object):
             h_ratio = img[0] / h
             w_ratio = img[1] / w
             ratio = h_ratio, w_ratio  # width, height ratios
-            ### 画图, for debug
+            ###### clw add: save the image, for debug
             # h, w = img.shape[:2]
             # img_out = img.copy()
             # for box in label:
@@ -272,7 +271,7 @@ class LetterBox(object):
         if isinstance(new_shape, int):
             self.new_shape = (new_shape, new_shape)  # 规定为 h，w
         self.interp = interp
-        self.showed_sample = SHOWED_SAMPLE
+        self.already_showed_sample = ALREADY_SHOWED_SAMPLE
 
     def letterbox(self, img, new_shape=(416, 416), interp=cv2.INTER_AREA):
         # Resize image to a 32-pixel-multiple rectangle https://github.com/ultralytics/yolov3/issues/232
@@ -334,7 +333,7 @@ class LetterBox(object):
             label[:, [2, 4]] /= img.shape[1]  # width
 
             ################
-            if not self.showed_sample:
+            if not self.already_showed_sample:
                 img_out = img.copy()
                 boxes = label[:, 2:6]
                 for box in boxes:
@@ -344,98 +343,7 @@ class LetterBox(object):
                     ymax = box[1] * img.shape[0] + box[3] * img.shape[0] / 2
                     img_out = cv2.rectangle(img_out, (xmin, ymin), (xmax, ymax), color=(0, 0, 255))
                 cv2.imwrite('letterbox.jpg', img_out)
-                self.showed_sample = True
+                self.already_showed_sample = True
             ################
 
             return (img, label, ((h, w), (ratio, pad)))   # clw note: ((h_ratio, w_ratio), (dw, dh))
-
-
-class Mosaic(object):
-
-    def __init__(self, p=0.5):
-        print('using Mosaic !')
-        write_to_file('using Mosaic !', log_file_path)
-        self.p = p
-        self.showed_sample = SHOWED_SAMPLE
-
-    def __call__(self, data):
-        if not isinstance(data, tuple):
-            raise Exception('Not support img without label to do mosaic operation!')
-
-        else:  # load 4 images at a time into a mosaic (only during training)
-            if random.random() < self.p:
-                img, label = data[0], data[1]
-
-                # loads images in a mosaic
-                labels4 = []
-                s = self.img_size
-                xc, yc = [int(random.uniform(s * 0.5, s * 1.5)) for _ in range(2)]  # mosaic center x, y
-                img4 = np.zeros((s * 2, s * 2, 3), dtype=np.uint8) + 128  # base image with 4 tiles
-                indices = [index] + [random.randint(0, len(self.labels) - 1) for _ in range(3)]  # 3 additional image indices
-                for i, index in enumerate(indices):
-                    # Load image
-                    img = load_image(self, index)
-                    h, w, _ = img.shape
-
-                    # place img in img4
-                    if i == 0:  # top left
-                        x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
-                    #  x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
-                    elif i == 1:  # top right
-                        x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
-                    #  x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
-                    elif i == 2:  # bottom left
-                        x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(s * 2, yc + h)
-                    #  x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, w, min(y2a - y1a, h)
-                    elif i == 3:  # bottom right
-                        x1a, y1a, x2a, y2a = xc, yc, min(xc + w, s * 2), min(s * 2, yc + h)
-                    #  x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
-
-                    x1b = int(random.uniform(0, w - (x2a - x1a)))
-                    y1b = int(random.uniform(0, h - (y2a - y1a)))
-                    padw = x1a - x1b
-                    padh = y1a - y1b
-                    x2b = x2a - padw
-                    y2b = y2a - padh
-
-                    img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
-
-                    # Load labels
-                    label_path = self.label_files[index]
-                    if os.path.isfile(label_path):
-                        x = self.labels[index]
-                        if x is None:  # labels not preloaded
-                            with open(label_path, 'r') as f:
-                                x = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)
-
-                        if x.size > 0:
-                            # Normalized xywh to pixel xyxy format
-                            labels = x.copy()
-                            labels[:, 1] = w * (x[:, 1] - x[:, 3] / 2) + padw
-                            labels[:, 2] = h * (x[:, 2] - x[:, 4] / 2) + padh
-                            labels[:, 3] = w * (x[:, 1] + x[:, 3] / 2) + padw
-                            labels[:, 4] = h * (x[:, 2] + x[:, 4] / 2) + padh
-                            np.clip(labels[:, 1::2], x1b + padw, x2b + padw, out=labels[:, 1::2])
-                            np.clip(labels[:, 2::2], y1b + padh, y2b + padh, out=labels[:, 2::2])
-                        else:
-                            labels = np.zeros((0, 5), dtype=np.float32)
-                        labels4.append(labels)
-
-                # Concat/clip labels
-                if len(labels4):
-                    labels4 = np.concatenate(labels4, 0)
-                    # np.clip(labels4[:, 1:] - s / 2, 0, s, out=labels4[:, 1:])  # use with center crop
-                    np.clip(labels4[:, 1:], 0, 2 * s, out=labels4[:, 1:])  # use with random_affine
-
-                # Augment
-                # img4 = img4[s // 2: int(s * 1.5), s // 2:int(s * 1.5)]  # center crop (WARNING, requires box pruning)
-
-                # # Augment
-                img4, labels4 = random_affine(img4, labels4,
-                                              degrees=self.hyp['degrees'] * 1,
-                                              translate=self.hyp['translate'] * 1,
-                                              scale=self.hyp['scale'] * 1,
-                                              shear=self.hyp['shear'] * 1,
-                                              border=-s // 2)  # border to remove
-
-                return img4, labels4

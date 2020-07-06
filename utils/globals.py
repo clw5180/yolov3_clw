@@ -7,5 +7,5 @@ log_folder = 'log'
 log_file_path = os.path.join(log_folder , 'log_{}.txt'.format(time.strftime("%Y%m%d_%H%M%S", time.localtime())))
 ###
 
-SHOWED_SAMPLE = False
+ALREADY_SHOWED_SAMPLE = False
 DATA_PATH = '/home/user/dataset/voc2007'

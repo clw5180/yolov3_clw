@@ -9,6 +9,7 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 from utils.globals import log_file_path
 
+import time
 ####################
 
 # ### clw note: new strategy to match anchors and GTs:
@@ -199,6 +200,25 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
         # Indices
         b, c = t[:, :2].long().t()  # target image, class
         gi, gj = gxy.long().t()  # grid x, y indices
+
+        ###### clw add: for debug the error -> RuntimeError: CUDA error: device-side assert triggered terminate called after throwing an instance of 'c10::Error' what():  CUDA error: device-side assert triggered
+        # if ng == 13:
+        #     error_mask = (gj[:] >= 13) | (gj[:] <0) | (gi[:] >= 13) | (gi[:] <0)
+        #     if error_mask.sum() != 0:
+        #         print('13')
+        #         print(error_mask)
+        # if ng == 26:
+        #     error_mask = (gj[:] >= 26) | (gj[:] <0) | (gi[:] >= 26) | (gi[:] <0)
+        #     if error_mask.sum() > 0:
+        #         print('26')
+        #         print(error_mask)
+        # if ng == 52:
+        #     error_mask = (gj[:] >= 52) | (gj[:] < 0) | (gi[:] >= 52) | (gi[:] <0)
+        #     if error_mask.sum() > 0:
+        #         print('52')
+        #         print(error_mask)
+        ######
+
         obj_mask[b, a, gj, gi] = 1   # TODO: why is gj, gi,   not gi, gj ? --- I think both are ok
         #aaa = torch.sum(obj_mask)  # TODO: aaa is 200, not 201, so some anchor match 2 gt
         noobj_mask[b, a, gj, gi] = 0
@@ -206,7 +226,8 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
         # Set noobj mask to zero where iou exceeds ignore threshold
         if not use_all_anchors:  # use best anchor, such as paper did
             for i, iou_ in enumerate(iou.t()):  # iou.t(): (201, 3)    iou_: (3,)
-                noobj_mask[b[i], iou_ > 0.5, gj[i], gi[i]] = 0    # 0.5 is ignore_thres, such as paper said.
+                noobj_mask[b[i], iou_ > 0.5, gj[i], gi[i]] = 0    # 0.5 is ignore_thres, such as paper said
+
 
         obj_mask_all.append(obj_mask)
         noobj_mask_all.append(noobj_mask)
@@ -739,9 +760,10 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):   # predicti
         (x1, y1, x2, y2, object_conf, class_conf, class)
     """
 
-    #min_wh, max_wh = 2, 30000  # (pixels) minimum and maximium box width and height
-    min_wh, max_wh = 2, 10000
+    min_wh, max_wh = 2, 4096  # (pixels) minimum and maximium box width and height
+    max_boxed_per_cls = 500
 
+    # count = 0
     output = [None] * len(prediction)
     for image_i, pred in enumerate(prediction):
         if pred is None or len(pred) == 0 :
@@ -758,8 +780,7 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):   # predicti
         # pred[class_pred != 2, 4] = 0.0
 
         # Select only suitable predictions
-        i = (pred[:, 4] > conf_thres) & (pred[:, 2:4] > min_wh).all(1) & (pred[:, 2:4] < max_wh).all(1) & \
-            torch.isfinite(pred).all(1)
+        i = (pred[:, 4] > conf_thres) & (pred[:, 2:4] > min_wh).all(1) & (pred[:, 2:4] < max_wh).all(1)
         pred = pred[i]
 
         # If none are remaining => process next image
@@ -776,6 +797,7 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):   # predicti
 
         # Detections ordered as (x1y1x2y2, obj_conf, class_conf, class_pred)
         pred = torch.cat((pred[:, :5], class_conf.unsqueeze(1), class_pred), 1)
+
 
         # Get detections sorted by decreasing confidence scores
         pred = pred[(-pred[:, 4]).argsort()]
@@ -797,14 +819,14 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):   # predicti
         # Non-maximum suppression
         det_max = []
 
-        for c in pred[:, -1].unique():
+        for c in pred[:, -1].unique():  # clw note: nms by different classes
             dc = pred[pred[:, -1] == c]  # select class c
             n = len(dc)
             if n == 1:
                 det_max.append(dc)  # No NMS required if only 1 prediction
                 continue
-            elif n > 500:
-                dc = dc[:500]  # limit to first 500 boxes: https://github.com/ultralytics/yolov3/issues/117
+            elif n > max_boxed_per_cls:
+                dc = dc[:max_boxed_per_cls]  # limit to first 500 boxes: https://github.com/ultralytics/yolov3/issues/117
 
             if method == 'VISION':
                 i = torchvision.ops.boxes.nms(dc[:, :4], dc[:, 4], nms_thres)
@@ -834,16 +856,24 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):   # predicti
                         det_max.append(dc[:1])
                     dc = dc[1:][iou < nms_thres]  # remove ious > threshold
 
+
             elif method == 'MERGE':  # weighted mixture box
+
                 while len(dc):
+                    #start = time.time()
                     if len(dc) == 1:
                         det_max.append(dc)
                         break
                     i = bbox_iou(dc[0], dc) > nms_thres  # iou with other boxes
+
                     weights = dc[i, 4:5]
                     dc[0, :4] = (weights * dc[i, :4]).sum(0) / weights.sum()
                     det_max.append(dc[:1])
                     dc = dc[i == 0]
+                    # count += 1
+                    #print('time use per box: %.6fs' % (time.time() - start))
+
+
 
             elif method == 'SOFT':  # soft-NMS https://arxiv.org/abs/1704.04503
                 sigma = 0.5  # soft-nms sigma parameter
@@ -861,6 +891,8 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):   # predicti
         if len(det_max):
             det_max = torch.cat(det_max)  # concatenate
             output[image_i] = det_max[(-det_max[:, 4]).argsort()]  # sort
+
+    # print('clw:', count)
 
     return output   # list (64,)  ->  (n, 7)
 
@@ -1134,6 +1166,33 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max
         cv2.imwrite(fname, cv2.cvtColor(mosaic, cv2.COLOR_BGR2RGB))
 
     return mosaic
+
+
+def plot_images2(imgs, targets, paths=None, fname='images.jpg'):
+    from pathlib import Path
+    # Plots training images overlaid with targets
+    imgs = imgs.cpu().numpy()
+    targets = targets.cpu().numpy()
+    # targets = targets[targets[:, 1] == 21]  # plot only one class
+
+    fig = plt.figure(figsize=(10, 10))
+    bs, _, h, w = imgs.shape  # batch size, _, height, width
+    bs = min(bs, 16)  # limit plot to 16 images
+    ns = np.ceil(bs ** 0.5)  # number of subplots
+
+    for i in range(bs):
+        boxes = xywh2xyxy(targets[targets[:, 0] == i, 2:6]).T
+        boxes[[0, 2]] *= w
+        boxes[[1, 3]] *= h
+        plt.subplot(ns, ns, i + 1).imshow(imgs[i].transpose(1, 2, 0))
+        plt.plot(boxes[[0, 2, 2, 0, 0]], boxes[[1, 1, 3, 3, 1]], '.-')
+        plt.axis('off')
+        if paths is not None:
+            s = Path(paths[i]).name
+            plt.title(s[:min(len(s), 40)], fontdict={'size': 8})  # limit to 40 characters
+    fig.tight_layout()
+    fig.savefig(fname, dpi=200)
+    plt.close()
 
 
 def write_to_file(text, file='log.txt', mode='a'):
