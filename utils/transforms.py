@@ -14,7 +14,7 @@ def build_transforms(img_size, is_train=False):
             # RandomAffine(),
 
             RandomHorizontalFilp(),
-            #AugmentHSV(),
+            AugmentHSV(),
             RandomCrop(),
             RandomAffine(),
             LetterBox(img_size, is_training=True),    # clw modify
@@ -307,8 +307,7 @@ class LetterBox(object):
             new_shape = (new_shape, new_shape)
 
         # Scale ratio (new / old)
-        r = max(new_shape) / max(shape)
-        r = min(r, 1.0)   # only scale down, do not scale up (for better test mAP)
+        r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
 
         # Compute padding
         ratio = r, r  # width, height ratios

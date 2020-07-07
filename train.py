@@ -245,6 +245,10 @@ if __name__ == '__main__':
     ######
     model.nc = nc
 
+    multi_scale = False
+    if multi_scale:
+        print('using multi_scale !')
+        write_to_file('using multi_scale !', log_file_path)
 
 
     # 4、训练
@@ -312,10 +316,7 @@ if __name__ == '__main__':
 
             ######
             # Multi-Scale training
-            multi_scale = True
             if multi_scale:
-                print('using multi_scale !')
-                write_to_file('using multi_scale !', log_file_path)
                 if ni  % 1 == 0:  #  adjust (67% - 150%) every 1 or 10 batches
                     img_size = random.randrange(10, 19 + 1) * 32
                 ##ns = [math.ceil(x * sf / 32.) * 32 for x in imgs.shape[2:]]  # new shape (stretched to 32-multiple)

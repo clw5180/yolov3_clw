@@ -1,5 +1,12 @@
 import os
 import time
+import torch
+
+### pytorch version
+import re
+match = re.match(r"(\d\.\d\.\d)(.*)", torch.__version__)
+pytorch_version_major, pytorch_version_minor, patch = map(int, match.group(1).split("."))
+###
 
 ### 模型、日志保存路径
 model_save_path = './weights/last.pt'

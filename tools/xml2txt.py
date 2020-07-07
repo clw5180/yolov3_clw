@@ -19,7 +19,8 @@ valid_path = '/home/user/dataset/voc2007/val'
 test_path = None
 class_name_path = '../cfg/voc.names' # 数据集类别名 list， 如 voc.names   coco.names
 img_format = 'jpg'
-val_with_difficult = True
+train_with_difficult = True
+val_with_difficult = False
 
 
 # 从xml文件中提取bounding box信息和w,h信息, 格式为[[x_min, y_min, x_max, y_max, name]]
@@ -81,10 +82,16 @@ def xml2txt(image_path,output_txt_file_path, class2indice, append = False ,fix_J
     '''  
     abs_image_path = os.path.abspath( image_path )
 
+    if 'train' in image_path:
+        with_difficult = train_with_difficult
+        if with_difficult == False:
+            print('Warning: train dataset remove difficult object !! ')
+
     if 'val' in image_path:
         with_difficult = val_with_difficult
-    else:
-        with_difficult = True
+        if with_difficult == False:
+            print('Warning: valid dataset remove difficult object !! ')
+
 
     # check if there is *.JPG 
     if fix_JPG:            

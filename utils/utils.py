@@ -7,7 +7,7 @@ import cv2
 import random
 import torch.nn as nn
 import matplotlib.pyplot as plt
-from utils.globals import log_file_path
+from utils.globals import log_file_path, pytorch_version_minor
 
 import time
 ####################
@@ -297,10 +297,12 @@ def compute_loss(p, p_box, targets, gt_boxs, model):  # p:predictions，一个li
 
     # Compute losses
     for i, pi in enumerate(p):  # layer index: 0,1,2   layer predictions: (bs,3,13,13,25), (bs,3,26,26,25), (bs,3,52,52,25)
-        obj_mask = obj_mask_all[i]  # obj_mask:(64, 3, 13, 13)    obj_mask.sum: 239
-        noobj_mask = noobj_mask_all[i]
-        # obj_mask = obj_mask_all[i].bool()   # clw note: for pytorch 1.4, have UserWarning: indexing with dtype torch.uint8 is now deprecated, please use a dtype torch.bool instead
-        # noobj_mask = noobj_mask_all[i].bool()
+        if pytorch_version_minor <= 1:   # pytorch 1.1 or less
+            obj_mask = obj_mask_all[i]  # obj_mask:(64, 3, 13, 13)    obj_mask.sum: 239
+            noobj_mask = noobj_mask_all[i]
+        else:
+            obj_mask = obj_mask_all[i].bool()   # clw note: for pytorch 1.4, have UserWarning: indexing with dtype torch.uint8 is now deprecated, please use a dtype torch.bool instead
+            noobj_mask = noobj_mask_all[i].bool()
 
         ###### clw note: borrowed from Peter's version,
         gt_boxes = gt_all  # (64, n, 4)   n is 150 in Peter's yolov3, there is the most gt num in a batch, such as 16
@@ -1261,7 +1263,11 @@ def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
 def clip_coords(boxes, img_shape):
 
     # Clip bounding xyxy bounding boxes to image shape (height, width)
-    # boxes[:, [0, 2]] = boxes[:, [0, 2]].clamp(min=0, max=img_shape[1])  # torch:  clip x
-    # boxes[:, [1, 3]] = boxes[:, [1, 3]].clamp(min=0, max=img_shape[0])  #         clip y
-    boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], a_min=0, a_max=img_shape[1])  # numpy:  clip x
-    boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], a_min=0, a_max=img_shape[0])  #         clip y
+    if isinstance(boxes, np.ndarray):
+        boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], a_min=0, a_max=img_shape[1])  # numpy:  clip x
+        boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], a_min=0, a_max=img_shape[0])  # clip y
+    else:
+        boxes[:, [0, 2]] = boxes[:, [0, 2]].clamp(min=0, max=img_shape[1])  # torch:  clip x
+        boxes[:, [1, 3]] = boxes[:, [1, 3]].clamp(min=0, max=img_shape[0])  #         clip y
+
+

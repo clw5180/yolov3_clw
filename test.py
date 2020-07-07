@@ -1,7 +1,7 @@
 from utils.utils import select_device
 from model.models import Darknet
 from utils.datasets import VocDataset
-from utils.utils import non_max_suppression, load_classes, ap_per_class, xywh2xyxy, bbox_iou, write_to_file
+from utils.utils import non_max_suppression, load_classes, ap_per_class, xywh2xyxy, bbox_iou, write_to_file, clip_coords
 from utils.parse_config import parse_data_cfg
 
 import argparse
@@ -71,6 +71,7 @@ def test(cfg,
 
         img_tensor = img_tensor.to(device)   # (bs, 3, 416, 416)
         target_tensor = target_tensor.to(device)
+        height, width = img_tensor.shape[2:]
 
         start = time.time()
         # Disable gradients
@@ -98,10 +99,8 @@ def test(cfg,
                     stats.append(([], torch.Tensor(), torch.Tensor(), tcls))
                 continue
 
-            # # Clip boxes to image bounds   TODO：有必要，因为 label 都是经过clip的，所以如果去掉clip，mAP应该会有所降低
-            # clip_coords(det, (height, width))
-
-
+            # Clip boxes to image bounds   TODO：有必要，因为 label 都是经过clip的，所以如果去掉clip，mAP应该会有所降低
+            clip_coords(pred, (height, width))   #  mAP is the same
 
             # Assign all predictions as incorrect
             correct = [0] * len(pred)
@@ -192,14 +191,15 @@ if __name__ == '__main__':
     #parser.add_argument('--cfg', type=str, default='cfg/yolov3-spp.cfg', help='xxx.cfg file path')
     parser.add_argument('--data', type=str, default='cfg/voc.data', help='xxx.data file path')
     parser.add_argument('--batch-size', type=int, default=64)
-    parser.add_argument('--device', type=str, default='0', help='device id (i.e. 0 or 0,1,2,3) ') # 默认单卡
+    parser.add_argument('--device', type=str, default='0,1', help='device id (i.e. 0 or 0,1,2,3) ') # 默认单卡
     parser.add_argument('--src-txt-path', type=str, default='./valid.txt', help='saved img_file_paths list')
     parser.add_argument('--dst-path', type=str, default='./output', help='save detect result in this folder')
     #parser.add_argument('--weights', type=str, default='weights/last.pt', help='path to weights file')
-    parser.add_argument('--weights', type=str, default='weights/20200704_50epoch_modify_noobj/last.pt', help='path to weights file')
+    parser.add_argument('--weights', type=str, default='weights/20200706_multiscale/last.pt', help='path to weights file')
+    #parser.add_argument('--weights', type=str, default='weights/20200704_50epoch_modify_noobj/last.pt', help='path to weights file')
     #parser.add_argument('--weights', type=str, default='weights/yolov3.pt', help='path to weights file')
     parser.add_argument('--img-size', type=int, default=416, help='resize to this size square and detect')
-    parser.add_argument('--conf-thres', type=float, default=0.1, help='object confidence threshold')
+    parser.add_argument('--conf-thres', type=float, default=0.01, help='object confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.5, help='iou threshold for compute mAP')
     parser.add_argument('--nms-thres', type=float, default=0.5, help='iou threshold for non-maximum suppression')
 
