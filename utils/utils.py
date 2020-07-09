@@ -159,7 +159,7 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
     multi_gpu = type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
     use_all_anchors = True
 
-    for i in model.yolo_layers:
+    for i in model.yolo_layers:  # clw note: 一层一层来
         # get number of grid points and anchor vec for this yolo layer
         if multi_gpu:
             ng, anchor_vec = model.module.module_list[i].ng[0], model.module.module_list[i].anchor_vec
@@ -191,7 +191,19 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
                 t = targets.repeat([na, 1])
                 gxy = gxy.repeat([na, 1])
                 gwh = gwh.repeat([na, 1])
-                iou_mask = (iou > 0.3).view(-1)
+
+                if pytorch_version_minor <= 1:  # pytorch 1.1 or less
+                    iou_mask1 = torch.zeros(iou.size()).byte().cuda()
+                else:
+                    iou_mask1 = torch.zeros(iou.size()).bool().cuda()
+                _, idx = iou.max(0)
+                for i in range(len(idx)):  # clw note: for loop's efficiency is low  TODO
+                    iou_mask1[idx[i], i] = 1  #        torch.sum(): 201
+
+                iou_mask2 = (iou > 0.3)  # (3, 201)  torch.sum(): 305
+                iou_mask = iou_mask1 | iou_mask2  # torch.sum(): 330
+
+                iou_mask = iou_mask.view(-1)
                 t, a, gxy, gwh = t[iou_mask], a[iou_mask], gxy[iou_mask], gwh[iou_mask]
 
             else:  # use best anchor only
@@ -648,13 +660,20 @@ def bboxes_anchor_iou(box1, anchors_wh, x1y1x2y2=True):
     inter_rect_y1 = torch.max(b1_y1, b2_y1)
     inter_rect_x2 = torch.min(b1_x2, b2_x2)
     inter_rect_y2 = torch.min(b1_y2, b2_y2)
+
     # Intersection area
-    inter_area = torch.clamp(inter_rect_x2 - inter_rect_x1 + 1, min=0) * torch.clamp(
-        inter_rect_y2 - inter_rect_y1 + 1, min=0
-    )
+    # inter_area = torch.clamp(inter_rect_x2 - inter_rect_x1 + 1, min=0) * torch.clamp(
+    #     inter_rect_y2 - inter_rect_y1 + 1, min=0)
+    # # Union Area
+    # b1_area = (b1_x2 - b1_x1 + 1) * (b1_y2 - b1_y1 + 1)
+    # b2_area = (b2_x2 - b2_x1 + 1) * (b2_y2 - b2_y1 + 1)
+
+    # clw modify: TODO
+    inter_area = torch.clamp(inter_rect_x2 - inter_rect_x1, min=0) * torch.clamp(
+        inter_rect_y2 - inter_rect_y1, min=0)
     # Union Area
-    b1_area = (b1_x2 - b1_x1 + 1) * (b1_y2 - b1_y1 + 1)
-    b2_area = (b2_x2 - b2_x1 + 1) * (b2_y2 - b2_y1 + 1)
+    b1_area = (b1_x2 - b1_x1) * (b1_y2 - b1_y1)
+    b2_area = (b2_x2 - b2_x1) * (b2_y2 - b2_y1)
 
     iou = inter_area / (b1_area + b2_area - inter_area + 1e-16)
 
