@@ -1,7 +1,7 @@
 from utils.voc_eval import voc_eval
 from utils.utils import select_device
 from model.models import Darknet
-from utils.datasets import VocDataset
+from dataset.datasets import VocDataset
 from utils.utils import non_max_suppression, load_classes, ap_per_class, xywh2xyxy, bbox_iou, write_to_file, scale_coords
 from utils.parse_config import parse_data_cfg
 from utils.globals import DATA_PATH

@@ -1,6 +1,6 @@
 from utils.utils import select_device
 from model.models import Darknet
-from utils.datasets import VocDataset
+from dataset.datasets import VocDataset
 from utils.utils import non_max_suppression, load_classes, ap_per_class, xywh2xyxy, bbox_iou, write_to_file, clip_coords
 from utils.parse_config import parse_data_cfg
 
@@ -67,7 +67,7 @@ def test(cfg,
 
 
     pbar = tqdm(dataloader)
-    for i, (img_tensor, target_tensor, img_path, shape) in enumerate(pbar):
+    for i, (img_tensor, target_tensor, img_path) in enumerate(pbar):
 
         img_tensor = img_tensor.to(device)   # (bs, 3, 416, 416)
         target_tensor = target_tensor.to(device)

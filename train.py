@@ -34,7 +34,7 @@ from utils.utils import select_device, init_seeds, plot_images, plot_images2
 from utils.parse_config import parse_data_cfg
 import torch
 import torch.optim.lr_scheduler as lr_scheduler
-from utils.datasets import VocDataset
+from dataset.datasets import VocDataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from utils.utils import compute_loss, load_darknet_weights, write_to_file, weights_init_normal
@@ -82,7 +82,7 @@ if __name__ == '__main__':
     # parser.add_argument('--cfg', type=str, default='cfg/voc_yolov3-spp.cfg', help='xxx.cfg file path')
     parser.add_argument('--cfg', type=str, default='cfg/voc_yolov3.cfg', help='xxx.cfg file path')
     parser.add_argument('--data', type=str, default='cfg/voc.data', help='xxx.data file path')
-    parser.add_argument('--device', default='0,1', help="device id (i.e. 0 or 0,1,2,3) or '' ") # 如果为空，则默认使用所有当前可用的显卡
+    parser.add_argument('--device', default='0, 1', help="device id (i.e. 0 or 0,1,2,3) or '' ") # 如果为空，则默认使用所有当前可用的显卡
     #parser.add_argument('--weights', type=str, default='weights/cspdarknet53-panet-spp.weights', help='path to weights file')
     # parser.add_argument('--weights', type=str, default='weights/resnet18.pth', help='path to weights file')
     # parser.add_argument('--weights', type=str, default='weights/resnet50.pth', help='path to weights file')
@@ -195,7 +195,7 @@ if __name__ == '__main__':
 
     # 3、设置优化器 和 学习率
     start_epoch = 0
-    optimizer = torch.optim.SGD(model.parameters(), lr=lr0, momentum=momentum, weight_decay=weight_decay, nesterov=True)  # TODO:  nesterov=True
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr0, momentum=momentum, weight_decay=weight_decay)  # TODO:  nesterov=True
     #optimizer = torch.optim.Adam(model.parameters(), lr=lr0)  # TODO: can't use Adam
 
     ######
@@ -226,7 +226,7 @@ if __name__ == '__main__':
     scheduler = custom_lr_scheduler.CosineDecayLR(optimizer,
                                                 T_max=total_epochs * len(dataloader),
                                                 lr_init=lr0,
-                                                lr_min=lr0 * 1e-3,
+                                                lr_min=lr0 * 1e-2,
                                                 warmup=2 * len(dataloader))
 
 
@@ -254,6 +254,7 @@ if __name__ == '__main__':
     # 4、训练
     print('')   # 换行
     print('Starting training for %g epochs...' % total_epochs)
+    time0 = time.time()
     nb = len(dataloader)
 
 
@@ -322,9 +323,7 @@ if __name__ == '__main__':
                 ##ns = [math.ceil(x * sf / 32.) * 32 for x in imgs.shape[2:]]  # new shape (stretched to 32-multiple)
                 img_tensor = F.interpolate(img_tensor, size=(img_size, img_size), mode='bilinear', align_corners=False)
 
-            img_size = img_tensor.size()[2]  # TODO
-            gt_box = target_tensor[:, :6].clone()
-            gt_box[:, 2:] *= img_size
+            img_size = img_tensor.size()[2]  # TODO: 目前只支持正方形，如416x416
             ######
 
             ### 训练过程主要包括以下几个步骤：
@@ -337,7 +336,7 @@ if __name__ == '__main__':
             # if target_tensor.size()[0] == 679:
             #     print('aaa')
             ######
-            loss, loss_items = compute_loss(p, p_box, target_tensor, gt_box, model)
+            loss, loss_items = compute_loss(p, p_box, target_tensor, model, img_size)
             if not torch.isfinite(loss):
                raise Exception('WARNING: non-finite loss, ending training ', loss_items)
 
@@ -388,28 +387,30 @@ if __name__ == '__main__':
         # scheduler.step()
 
         # compute mAP
-        results, maps = test.test(cfg,
-        #test2.test(cfg,
-                  'cfg/voc.data',
-                  batch_size=batch_size,
-                  img_size=img_size,
-                  conf_thres=0.01,
-                  iou_thres=0.5,
-                  nms_thres=0.5,
-                  src_txt_path=valid_txt_path,
-                  dst_path='./output',
-                  weights=None,
-                  log_file_path=log_file_path,
-                  model=model)
+        if epoch >= 3:  # clw note: avoid nms cause too much time.
+            results, maps = test.test(cfg,
+            #test2.test(cfg,
+                      'cfg/voc.data',
+                      batch_size=batch_size,
+                      img_size=img_size,
+                      conf_thres=0.01,
+                      iou_thres=0.5,
+                      nms_thres=0.5,
+                      src_txt_path=valid_txt_path,
+                      dst_path='./output',
+                      weights=None,
+                      log_file_path=log_file_path,
+                      model=model)
 
-        # save model   TODO
-        last_chkpt = {'epoch': epoch,
-                      'model': model.module.state_dict() if type(model) is nn.parallel.DistributedDataParallel else model.state_dict(),  # clw note: 多卡
-                      'optimizer': optimizer.state_dict()}
+            # save model   TODO
+            last_chkpt = {'epoch': epoch,
+                          'model': model.module.state_dict() if type(model) is nn.parallel.DistributedDataParallel else model.state_dict(),  # clw note: 多卡
+                          'optimizer': optimizer.state_dict()}
 
-        torch.save(last_chkpt, model_save_path)
+            torch.save(last_chkpt, model_save_path)
 
-    print('end')
+    print('Training end! total time use: %.3fs' % (time.time() - time0))
+
 
 
 

@@ -154,12 +154,14 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
     tcls_all = []
     tx_all, ty_all, th_all, tw_all = [], [], [], []
     obj_mask_all, noobj_mask_all = [], []
+    target_all = []  # clw note: 在compute_loss中转化为gt，然后计算pred和gt的iou，大于0.5的计算 noobj损失
 
 
     multi_gpu = type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
     use_all_anchors = True
 
     for i in model.yolo_layers:  # clw note: 一层一层来
+
         # get number of grid points and anchor vec for this yolo layer
         if multi_gpu:
             ng, anchor_vec = model.module.module_list[i].ng[0], model.module.module_list[i].anchor_vec
@@ -176,9 +178,10 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
         tcls = FloatTensor(bs, na, ng, ng, nc).fill_(0)
 
         # iou of targets-anchors
-        t, a = targets, []
-        gwh = t[:, 4:6] * ng  # (171, 2)
-        gxy = t[:, 2:4] * ng  # grid x, y
+        a = []
+        targets_cur = targets
+        gwh = targets[:, 4:6] * ng  # (171, 2)
+        gxy = targets[:, 2:4] * ng  # grid x, y
         gxywh = torch.cat((gxy, gwh), 1)  # clw note: TODO
 
         if nt:
@@ -186,34 +189,89 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
             iou = torch.stack([bboxes_anchor_iou(gxywh, anchor, x1y1x2y2=False) for anchor in anchor_vec], 0)  # clw modify: wh_iou is not accurate enough
 
             if use_all_anchors:
+                iou_mask = (iou > 0.3)
+                target_mask = iou_mask.sum(0) > 0
+                targets_need = targets[target_mask]
+                ###### clw modify
+                gts = []  # list, len: bs
+                pre_batch_idx = 0
+                gt_box = []
+                for batch_idx, target in enumerate(targets_need):
+                    if targets_need[batch_idx][0] == pre_batch_idx:  # 相同batch_idx，直接进box_list
+                        gt_box.append(target[2:])
+                    else:  # 不同batch_idx，
+                        if targets_need[batch_idx][0] - pre_batch_idx == 1: # 相差1
+                            pre_batch_idx += 1
+                            gts.append(gt_box) # 先将之前的box_list进总的list
+                            gt_box = []  # 同时box_list清零，
+                            gt_box.append(target[2:])  # 然后这个box进box_list
+                        elif targets_need[batch_idx][0] - pre_batch_idx > 1:  # 相差大于1
+                            gts.append(gt_box)  # 先将之前的box_list进总的list
+                            gts.append([])   # 然后加一个空的box_list到总的list
+                            pre_batch_idx += 1
+                            gt_box = []  # 同时box_list清零
+                            gt_box.append(target[2:])  # 然后这个box进box_list
+                            while(targets_need[batch_idx][0] - pre_batch_idx >= 1):  # 如果依然相差大于1，那么重复操作以下两步
+                                if targets_need[batch_idx][0] - pre_batch_idx > 1:
+                                    pre_batch_idx += 1
+                                    gts.append([])
+                                else:
+                                    pre_batch_idx += 1
+                            continue
+                        else:  # 相差小于1，有bug
+                            raise Exception('Error: targets_need[batch_idx][0] - pre_batch_idx < 1 never occur! maybe have some bug')
+                gts.append(gt_box)  # final batch; and gts looks like list[0]: [tensor1, tensor2....]  list[1]: [tensor1]
+                for i in range(bs - 1 - int(target[0])):  # clw note: 比如bs=64, 但是batch_idx=60以后都没有匹配的target，那么这里要加上相应数量的[]
+                    gts.append([])
+
+                # print(len(gt_all))
+                gt_max_len = -1
+                for batch_idx in range(len(gts)):
+                    # print(i, len(gt_all[i]))
+                    if len(gts[batch_idx]) > gt_max_len:
+                        gt_max_len = len(gts[batch_idx])
+                gt_all = torch.cuda.FloatTensor(len(gts), gt_max_len ,4).fill_(0)
+
+                for batch_idx in range(len(gts)):
+                    for target_idx in range(len(gts[batch_idx])):
+                        #print(batch_idx, target_idx)
+                        gt_all[batch_idx, target_idx] = gts[batch_idx][target_idx]
+
+                target_all.append(gt_all)  # gt_all: tensor(bs, n, 4), n is max gt num in batchsize images, such as 150 in Peterisfer
+                ######
+
                 na = len(anchor_vec)  # number of anchors
                 a = torch.arange(na).view((-1, 1)).repeat([1, nt]).view(-1)  # anchor_idx, represent which anchor in this yolo_layer, 0, 1 or 2
-                t = targets.repeat([na, 1])
+                targets_cur = targets_cur.repeat([na, 1])
                 gxy = gxy.repeat([na, 1])
                 gwh = gwh.repeat([na, 1])
 
-                if pytorch_version_minor <= 1:  # pytorch 1.1 or less
-                    iou_mask1 = torch.zeros(iou.size()).byte().cuda()
-                else:
-                    iou_mask1 = torch.zeros(iou.size()).bool().cuda()
-                _, idx = iou.max(0)
-                for i in range(len(idx)):  # clw note: for loop's efficiency is low  TODO
-                    iou_mask1[idx[i], i] = 1  #        torch.sum(): 201
+                ###### clw modify
+                # if pytorch_version_minor <= 1:  # pytorch 1.1 or less
+                #     iou_mask1 = torch.zeros(iou.size()).byte().cuda()
+                # else:
+                #     iou_mask1 = torch.zeros(iou.size()).bool().cuda()
+                # _, idx = iou.max(0)
+                # for i in range(len(idx)):  # clw note: for loop's efficiency is low  TODO
+                #     iou_mask1[idx[i], i] = 1  #        torch.sum(): 201
+                # iou_mask2 = (iou > 0.3)  # (3, 201)  torch.sum(): 305
+                # iou_mask = iou_mask1 | iou_mask2  # torch.sum(): 330
+                ######
 
-                iou_mask2 = (iou > 0.3)  # (3, 201)  torch.sum(): 305
-                iou_mask = iou_mask1 | iou_mask2  # torch.sum(): 330
 
                 iou_mask = iou_mask.view(-1)
-                t, a, gxy, gwh = t[iou_mask], a[iou_mask], gxy[iou_mask], gwh[iou_mask]
+                targets_cur, a, gxy, gwh = targets_cur[iou_mask], a[iou_mask], gxy[iou_mask], gwh[iou_mask]
+
 
             else:  # use best anchor only
                 _, a = iou.max(0)  # best iou and anchor,  for example: nt=201, a:(201,), iou:(201,)
 
         # Indices
-        b, c = t[:, :2].long().t()  # target image, class
+        b, c = targets_cur[:, :2].long().t()  # target image, class
         gi, gj = gxy.long().t()  # grid x, y indices
 
-        ###### clw add: for debug the error -> RuntimeError: CUDA error: device-side assert triggered terminate called after throwing an instance of 'c10::Error' what():  CUDA error: device-side assert triggered
+        ################################################################################################
+        # clw add: for debug the error -> RuntimeError: CUDA error: device-side assert triggered terminate called after throwing an instance of 'c10::Error' what():  CUDA error: device-side assert triggered
         # if ng == 13:
         #     error_mask = (gj[:] >= 13) | (gj[:] <0) | (gi[:] >= 13) | (gi[:] <0)
         #     if error_mask.sum() != 0:
@@ -229,9 +287,9 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
         #     if error_mask.sum() > 0:
         #         print('52')
         #         print(error_mask)
-        ######
+        ################################################################################################
 
-        obj_mask[b, a, gj, gi] = 1   # TODO: why is gj, gi,   not gi, gj ? --- I think both are ok
+        obj_mask[b, a, gj, gi] = 1
         #aaa = torch.sum(obj_mask)  # TODO: aaa is 200, not 201, so some anchor match 2 gt
         noobj_mask[b, a, gj, gi] = 0
 
@@ -265,41 +323,16 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
             assert c.max() <= model.nc, 'Model accepts %g classes labeled from 0-%g, however you supplied a label %g. See \
                                         https://github.com/ultralytics/yolov3/wiki/Train-Custom-Data' % (model.nc, model.nc - 1, c.max())
 
-    return obj_mask_all, noobj_mask_all, tx_all, ty_all, tw_all, th_all, tcls_all
+    return obj_mask_all, noobj_mask_all, tx_all, ty_all, tw_all, th_all, tcls_all, target_all
 
 
 ### new version
-def compute_loss(p, p_box, targets, gt_boxs, model):  # p:predictions，一个list包含3个tensor，维度(bs,3,13,13,25), (bs,3,26,26,25)....
+def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个list包含3个tensor，维度(bs,3,13,13,25), (bs,3,26,26,25)....
                                              # p_box: 一个list包含3个tensor，维度(bs,3,13,13,4), (bs,3,26,26,4)....   targets: (n, 6)
-    ###### clw modify
-    gts = []  # list, len: bs
-    pre_batch_idx = 0
-    gt_box = []
-    for i, target in enumerate(gt_boxs):
-        if gt_boxs[i][0] != pre_batch_idx:
-            pre_batch_idx += 1
-            gts.append(gt_box)
-            gt_box = []
-        gt_box.append(target[2:])
-    gts.append(gt_box)   # final batch
-
-    # print(len(gt_all))
-    gt_max_len = -1
-    for i in range(len(gts)):
-        # print(i, len(gt_all[i]))
-        if len(gts[i]) > gt_max_len:
-            gt_max_len = len(gts[i])
-    gt_all = torch.cuda.FloatTensor(len(gts), gt_max_len ,4).fill_(0)
-
-    for i in range(len(gts)):
-        for j in range(len(gts[i])):
-            #print(i, j)
-            gt_all[i, j] = gts[i][j]
-    ######
 
     lcls, lbox, lobj = torch.cuda.FloatTensor([0]), torch.cuda.FloatTensor([0]), torch.cuda.FloatTensor([0])  #ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor  # clw note: 暂时不支持cpu，太慢
     bs = p[0].size(0)  # clw note: batchsize
-    obj_mask_all, noobj_mask_all, tx_all, ty_all, tw_all, th_all, tcls_all = build_targets(model, bs, targets)
+    obj_mask_all, noobj_mask_all, tx_all, ty_all, tw_all, th_all, tcls_all, target_all = build_targets(model, bs, targets)
 
     # Define criteria
     loss_reduction_type = 'sum'  # Loss reduction (sum or mean)  # reduction：控制损失输出模式。设为"sum"表示对样本进行求损失和；设为"mean"表示对样本进行求损失的平均值；而设为"none"表示对样本逐个求损失，输出与输入的shape一样。
@@ -317,7 +350,8 @@ def compute_loss(p, p_box, targets, gt_boxs, model):  # p:predictions，一个li
             noobj_mask = noobj_mask_all[i].bool()
 
         ###### clw note: borrowed from Peter's version,
-        gt_boxes = gt_all  # (64, n, 4)   n is 150 in Peter's yolov3, there is the most gt num in a batch, such as 16
+
+        gt_boxes = target_all[i][:, :, :] * img_size   # (64, n, 4)   n is 150 in Peter's yolov3, there is the most gt num in a batch, such as 16
         p_boxes = p_box[i]   # (64, 3, 13, 13, 4)
         p_boxes = p_boxes.float()
         a = p_boxes.unsqueeze(4)  # (64, 3, 13, 13, 1, 4)
@@ -624,16 +658,6 @@ def bboxes_iou(box1, box2, x1y1x2y2=True):
     iou = inter_area / (b1_area + b2_area - inter_area + 1e-16)
 
     return iou
-# Traceback (most recent call last):
-#   File "train.py", line 363, in <module>
-#     log_file_path = log_file_path)
-#   File "/home/user/yolov3_clw/test.py", line 80, in test
-#     nms_output = non_max_suppression(output, conf_thres, nms_thres)
-#   File "/home/user/yolov3_clw/utils/utils.py", line 584, in non_max_suppression
-#     i = bbox_iou(dc[0], dc) > nms_thres  # iou with other boxes
-#   File "/home/user/yolov3_clw/utils/utils.py", line 406, in bbox_iou
-#     b1_x1, b1_y1, b1_x2, b1_y2 = box1[:, 0], box1[:, 1], box1[:, 2], box1[:, 3]
-# IndexError: too many indices for tensor of dimension 1
 
 
 def bboxes_anchor_iou(box1, anchors_wh, x1y1x2y2=True):

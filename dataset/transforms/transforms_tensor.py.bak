@@ -1,0 +1,377 @@
+import numpy as np
+import cv2
+import torch
+from utils.utils import xyxy2xywh, write_to_file
+from utils.globals import log_file_path, ALREADY_SHOWED_SAMPLE
+import random
+
+def build_transforms(img_size, is_train=False):
+    if is_train:
+        transform = Compose([
+            # RandomHorizontalFilp(),
+            # RandomCrop(),
+            # Resize(img_size),     # clw modify
+            # RandomAffine(),
+
+            RandomHorizontalFilp(),
+            AugmentHSV(),
+            RandomCrop(),
+            RandomAffine(),
+            LetterBox(img_size, is_training=True),    # clw modify
+            ToTensor()              # clw modify: # ToTensor 已经转化为 3x416x416 并且完成归一化
+        ])
+    else:
+        transform = Compose([
+            #Resize(img_size),
+            LetterBox(img_size, is_training=False),
+            ToTensor()
+        ])
+    return transform
+
+
+class Compose(object):
+    """Composes several transforms together.
+    Args:
+        transforms (list of ``Transform`` objects): list of transforms to compose.
+    """
+    def __init__(self, transforms=[]):
+        self.transforms = transforms
+
+    def __call__(self, *data):  # 测试集只用传img，训练集需要同时传入img和label；因此 data 是可变长参数
+        # 这里data一定是tuple，根据长度判断data的有效性
+        if len(data) > 2:
+            raise Exception('can not pass more than 2 params!')
+        elif len(data) == 1:
+            data = data[0]   # 如果是tuple内只含有1个元素，则解除tuple，便于后面迭代 data = t(data) 的时候统一返回 img 即可
+
+        for t in self.transforms:
+            data = t(data)
+        return data
+
+    def add(self, transform):
+        self.transforms.append(transform)
+
+
+### label: tensor (n, 6) -> [0.00, 18.00, 0.48, 0.49, 0.78, 0.63]
+class ToTensor(object):
+    def __init__(self):
+        pass
+
+    def __call__(self, data):
+        if not isinstance(data, tuple): # 只是传img
+            img = data.astype(np.float32)
+            img /= 255.0
+            #img = img.transpose(2, 0, 1)    # clw note：img[:, :, ::-1]很有必要 ，否则会产生大量漏检！事实证明使用官方模型detect，如果用rgb翻转后的图片，很多东西就检不出来了！
+            img = img[:, :, ::-1].transpose(2, 0, 1)   # clw note: BGR to RGB, [h,w,c] to [c,h,w]
+            img = np.ascontiguousarray(img)
+            return torch.from_numpy(img)
+
+        else:  # 既有img，又有label
+            img, label = data[0], data[1]
+            img = img[:, :, ::-1].transpose(2, 0, 1)
+            img = np.ascontiguousarray(img)    # TODO: 这句话如果不加，后面torch.from_numpy(img)会报错
+            img_tensor = torch.from_numpy(img).float() / 255
+            if len(data) == 2:
+                return (img_tensor, label)
+            elif len(data) == 3:
+                return (img_tensor, label, data[2])
+            else:
+                raise Exception("This data's type can't support now!")
+
+
+
+class AugmentHSV(object):
+    def __init__(self, hgain=0.01, sgain=0.3, vgain=0.3, p=0.5):
+        print('using AugmentHSV !')
+        write_to_file('using AugmentHSV !', log_file_path)
+        self.p = p
+        self.hgain = hgain
+        self.sgain = sgain
+        self.vgain = vgain
+        self.already_showed_sample = ALREADY_SHOWED_SAMPLE
+
+    def __call__(self, data):
+        if not isinstance(data, tuple):
+            pass
+        else:
+            if random.random() < self.p:
+                img, label = data[0], data[1]
+                x = np.random.uniform(-1, 1, 3) * [self.hgain, self.sgain, self.vgain] + 1  # random gains
+                img_hsv = (cv2.cvtColor(img, cv2.COLOR_BGR2HSV) * x).clip(None, 255).astype(np.uint8)
+                np.clip(img_hsv[:, :, 0], None, 179, out=img_hsv[:, :, 0])  # inplace hue clip (0 - 179 deg)
+                img = cv2.cvtColor(img_hsv, cv2.COLOR_HSV2BGR)  # no return needed
+                return (img, label)
+            else:
+                return data
+
+
+class RandomHorizontalFilp(object):
+    def __init__(self, p=0.5):
+        print('using RandomHorizontalFilp !')
+        write_to_file('using RandomHorizontalFilp !', log_file_path)
+        self.p = p
+        self.already_showed_sample = ALREADY_SHOWED_SAMPLE
+
+    def __call__(self, data):
+        if not isinstance(data, tuple):
+            raise Exception('only support img with label!')
+        else:
+            if random.random() < self.p:
+                img, label = data[0], data[1]
+                # _, w_img, _ = img.shape
+                # img = np.fliplr(img)
+                img = img[:, ::-1, :]
+                label[:, 2] = 1 - label[:, 2]
+
+                ################
+                if not self.already_showed_sample:
+                    img_out = img.copy()
+                    boxes = label[:, 2:6]
+                    for box in boxes:
+                        xmin = box[0] * img.shape[1] - box[2] * img.shape[1] / 2
+                        ymin = box[1] * img.shape[0] - box[3] * img.shape[0] / 2
+                        xmax = box[0] * img.shape[1] + box[2] * img.shape[1] / 2
+                        ymax = box[1] * img.shape[0] + box[3] * img.shape[0] / 2
+                        img_out = cv2.rectangle(img_out, (xmin, ymin), (xmax, ymax), color=(0, 0, 255))
+                    cv2.imwrite('hflip.jpg', img_out)
+                    self.already_showed_sample = True
+                ################
+
+                return (img, label)
+            else:
+                return data
+
+
+class RandomCrop(object):
+    def __init__(self, p=0.5):
+        print('using RandomCrop !')
+        write_to_file('using RandomCrop !', log_file_path)
+        self.p = p
+        self.already_showed_sample = ALREADY_SHOWED_SAMPLE
+
+    def __call__(self, data):
+        if not isinstance(data, tuple):
+            raise Exception('only support img with label!')
+        else:
+            if random.random() < self.p:
+                img, label = data[0], data[1]
+                h_img, w_img, _ = img.shape
+
+                xmin = torch.min(label[:, 2] - label[:, 4] / 2) * w_img
+                ymin = torch.min(label[:, 3] - label[:, 5] / 2) * h_img
+                xmax = torch.max(label[:, 2] + label[:, 4] / 2) * w_img
+                ymax = torch.max(label[:, 3] + label[:, 5] / 2) * h_img
+
+                crop_xmin = int(random.uniform(0, xmin))
+                crop_ymin = int(random.uniform(0, ymin))
+                crop_xmax = int(random.uniform(xmax, w_img))
+                crop_ymax = int(random.uniform(ymax, h_img))
+
+                img = img[crop_ymin : crop_ymax, crop_xmin : crop_xmax]
+
+                w_img_new = crop_xmax - crop_xmin
+                h_img_new = crop_ymax - crop_ymin
+                label[:, 2] = ( label[:, 2] * w_img - crop_xmin ) / w_img_new
+                label[:, 3] = ( label[:, 3] * h_img - crop_ymin ) / h_img_new
+                label[:, 4] = label[:, 4] * w_img / w_img_new
+                label[:, 5] = label[:, 5] * h_img / h_img_new
+
+                ################
+                if not self.already_showed_sample:
+                    img_out = img.copy()
+                    boxes = label[:, 2:6]
+                    for box in boxes:
+                        xmin = box[0] * w_img_new - box[2] * w_img_new / 2
+                        ymin = box[1] * h_img_new - box[3] * h_img_new / 2
+                        xmax = box[0] * w_img_new + box[2] * w_img_new / 2
+                        ymax = box[1] * h_img_new + box[3] * h_img_new / 2
+                        img_out = cv2.rectangle(img_out, (xmin, ymin), (xmax, ymax), color=(0, 0, 255))
+                    cv2.imwrite('crop.jpg', img_out)
+                    self.already_showed_sample = True
+                ################
+
+                return (img, label)
+            else:
+                return data
+
+
+class RandomAffine(object):
+    def __init__(self, p=0.5):
+        print('using RandomAffine !')
+        write_to_file('using RandomAffine !', log_file_path)
+        self.p = p
+        self.already_showed_sample = ALREADY_SHOWED_SAMPLE
+
+    def __call__(self, data):
+        if not isinstance(data, tuple):
+            raise Exception('only support img with label!')
+        else:
+
+            if random.random() < self.p:
+                img, label = data[0], data[1]
+                h_img, w_img, _ = img.shape
+                # 得到可以包含所有bbox的最大bbox
+                #max_bbox = torch.cat([torch.min(label[:, 0:2], axis=0), torch.max(label[:, 2:4], axis=0)], dim=-1)
+
+                xmin = torch.min(label[:, 2] - label[:, 4] / 2)
+                ymin = torch.min(label[:, 3] - label[:, 5] / 2)
+                xmax = torch.max(label[:, 2] + label[:, 4] / 2)
+                ymax = torch.max(label[:, 3] + label[:, 5] / 2)
+
+                dx = random.uniform(-xmin, 1-xmax) * w_img
+                dy = random.uniform(-ymin, 1-ymax) * h_img
+
+                M = np.array([[1, 0, dx], [0, 1, dy]])
+                # print('img shape:', img.shape)
+                # print('dx, dy:', dx, dy)
+                img = cv2.warpAffine(img, M, (w_img, h_img))  # clw note: img translation -> x_axis + tx, y_axis + ty
+                                                              #           default border color is black (0, 0, 0)
+                label[:, 2] = label[:, 2] + dx / w_img
+                label[:, 3] = label[:, 3] + dy / h_img
+
+                ################
+                if not self.already_showed_sample:
+                    img_out = img.copy()
+                    boxes = label[:, 2:6]
+                    for box in boxes:
+                        xmin = box[0] * w_img - box[2] * w_img / 2
+                        ymin = box[1] * h_img - box[3] * h_img / 2
+                        xmax = box[0] * w_img + box[2] * w_img / 2
+                        ymax = box[1] * h_img + box[3] * h_img / 2
+                        img_out = cv2.rectangle(img_out, (xmin, ymin), (xmax, ymax), color=(0, 0, 255))
+                    cv2.imwrite('affine.jpg', img_out)
+                    self.already_showed_sample = True
+                ################
+
+                return img, label
+            else:
+                return data
+
+
+class Resize(object):
+    def __init__(self, new_size, interpolation=cv2.INTER_LINEAR):
+        if isinstance(new_size, int):
+            self.new_size = (new_size, new_size)  # 规定为 h，w
+        self.interpolation = interpolation
+
+    def __call__(self, data):
+        if not isinstance(data, tuple):
+            img = cv2.resize(data, self.new_size, interpolation=self.interpolation)
+            return img  # TODO：注意不能只返回 img，至少还要返回个 ratio，因为 detect.py 需要知道 resize的比例才能准确定位
+
+        else:
+            img, label = data[0], data[1]
+            #orig_h, orig_w = img.shape[:2]
+            #ratio_h = self.new_size[0] / orig_h
+            #ratio_w = self.new_size[1] / orig_w  # 原图的框 -> resize后的图的框 ，即 orig -> new 比如从500 reize到416，ratio=0.832
+            #label[:, 2] *= ratio_w   # clw note：  x_ctr，比如0.2，那么 img从 512->1024, 这个box的 x_ctr 的相对坐标还是 0.2，因此不用乘以 ratio
+            #label[:, 3] *= ratio_h   #
+            #label[:, 4] *= ratio_w   # clw note:  w，同样也是相对于整张图的大小，因此resize后的相对坐标也不需要任何变换；
+            #label[:, 5] *= ratio_h   #               因此这里的 x_ctr, y_ctr, w, h都是不需要任何处理的......
+
+            h, w = img.shape[:2]
+            img = cv2.resize(img, self.new_size, interpolation=self.interpolation)
+            h_ratio = img[0] / h
+            w_ratio = img[1] / w
+            ratio = h_ratio, w_ratio  # width, height ratios
+            ###### clw add: save the image, for debug
+            # h, w = img.shape[:2]
+            # img_out = img.copy()
+            # for box in label:
+            #     x_ctr_box = box[2] * w
+            #     y_ctr_box = box[3] * h
+            #     w_box = box[4] * w
+            #     h_box = box[5] * h
+            #     img_out = cv2.rectangle(img, (x_ctr_box - w_box/2, y_ctr_box-h_box/2),  # TODO: 如果 box 是tensor 格式，就不需要转int   TODO
+            #                             (x_ctr_box+w_box/2, y_ctr_box+h_box/2), color=(0, 0, 255), thickness=2)
+            # i = random.randint(1, 100)
+            # cv2.imwrite('./resize_img{}.jpg'.format(i), img_out)
+            ###
+            return (img, label, ((h, w), None))
+
+
+class LetterBox(object):
+    def __init__(self, new_shape, is_training=False, interp=cv2.INTER_LINEAR):  # cv2.INTER_AREA
+        print('using LetterBox !')
+        write_to_file('using LetterBox !', log_file_path)
+        if isinstance(new_shape, int):
+            self.new_shape = (new_shape, new_shape)  # 规定为 h，w
+        self.is_training = is_training
+        self.interp = interp
+        self.already_showed_sample = ALREADY_SHOWED_SAMPLE
+
+    def letterbox(self, img, new_shape=(416, 416), interp=cv2.INTER_AREA):
+        # Resize image to a 32-pixel-multiple rectangle https://github.com/ultralytics/yolov3/issues/232
+        shape = img.shape[:2]  # current shape [height, width]
+        if isinstance(new_shape, int):
+            new_shape = (new_shape, new_shape)
+
+        # Scale ratio (new / old)
+        r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+
+        # Compute padding
+        ratio = r, r  # width, height ratios
+        new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+        dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
+
+        dw /= 2  # divide padding into 2 sides
+        dh /= 2
+
+        if shape[::-1] != new_unpad:  # resize
+            img = cv2.resize(img, new_unpad, interpolation=interp)  # INTER_AREA is better, INTER_LINEAR is faster
+
+        top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+        left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+        img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(128, 128, 128))  # add border
+        return img, ratio, (dw, dh)  # img:(416, 416, 3)  ratio:(0.832, 0.832)    dw:0.0   dh:52.0
+
+    def __call__(self, data):
+        if not isinstance(data, tuple):
+            img, _, _ = self.letterbox(data, self.new_shape, self.interp)
+            return img  # TODO：同 Resize那里
+
+        else:
+            img, label = data[0], data[1]    # img: (375, 500, 3)  label: (n, 6)
+            ######  # clw remove
+            # r = self.new_shape[0] / max(img.shape)  # resize image to img_size
+            # if r < 1:  # always resize down, only resize up if training with augmentation
+            #     interp = cv2.INTER_AREA  # LINEAR for training, AREA for testing
+            #     h, w = img.shape[:2]
+            #     # print('clw: interpolation =', interp )
+            #     # print('clw: interpolation =', interp )
+            #     # print('clw: interpolation =', interp )
+            #     img = cv2.resize(img, (int(w * r), int(h * r)), interpolation=interp)
+            # ######
+            h, w = img.shape[:2]  # h:375  w:500
+            img, ratio, pad = self.letterbox(img, self.new_shape, self.interp)
+
+            labels = label.clone()  # clw note：这里很重要，因为下面这几句互相会覆盖，所以必须深拷贝出来；
+            label[:, 2] = ratio[0] * w * (labels[:, 2] - labels[:, 4] / 2) + pad[0]  # pad width
+            label[:, 3] = ratio[1] * h * (labels[:, 3] - labels[:, 5] / 2) + pad[1]  # pad height
+            label[:, 4] = ratio[0] * w * (labels[:, 2] + labels[:, 4] / 2) + pad[0]
+            label[:, 5] = ratio[1] * h * (labels[:, 3] + labels[:, 5] / 2) + pad[1]
+
+            # convert xyxy to xywh
+            label[:, 2:6] = xyxy2xywh(label[:, 2:6])
+
+            # Normalize coordinates 0 - 1
+            label[:, [3, 5]] /= img.shape[0]  # height
+            label[:, [2, 4]] /= img.shape[1]  # width
+
+            ################
+            if not self.already_showed_sample:
+                img_out = img.copy()
+                boxes = label[:, 2:6]
+                for box in boxes:
+                    xmin = box[0] * img.shape[1] - box[2] * img.shape[1] / 2
+                    ymin = box[1] * img.shape[0] - box[3] * img.shape[0] / 2
+                    xmax = box[0] * img.shape[1] + box[2] * img.shape[1] / 2
+                    ymax = box[1] * img.shape[0] + box[3] * img.shape[0] / 2
+                    img_out = cv2.rectangle(img_out, (xmin, ymin), (xmax, ymax), color=(0, 0, 255))
+                cv2.imwrite('letterbox.jpg', img_out)
+                self.already_showed_sample = True
+            ################
+            if self.is_training:
+                return (img, label)
+            else:
+                return (img, label, ((h, w), (ratio, pad)))   # clw note: ((h_ratio, w_ratio), (dw, dh))
