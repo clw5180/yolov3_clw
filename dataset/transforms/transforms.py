@@ -2,14 +2,16 @@ import random
 import numpy as np
 import random
 import cv2
+from utils.globals import log_file_path
+from utils.utils import write_to_file
 
 
 def build_transforms(img_size, is_train=False):
     if is_train:
         transform = Compose([
-            # RandomHorizontalFlip(),
-            # RandomCrop(),
-            # RandomTranslate(),
+            RandomHorizontalFlip(),
+            RandomCrop(),
+            RandomTranslate(),
             ImgProcess(img_size)  # pad not support yet
             # Resize(img_size),
             # Normalize(),
@@ -66,6 +68,9 @@ class Compose(object):
 class RandomTranslate(object):
     def __init__(self, p=0.5):
         self.p = p
+        print('using RandomTranslate !')
+        write_to_file('using RandomTranslate !', log_file_path)
+
     def __call__(self, data):
         if not isinstance(data, tuple):
             raise Exception('Warning: RandomTranslate only support training process now !!')
@@ -96,6 +101,9 @@ class RandomTranslate(object):
 class RandomCrop(object):
     def __init__(self, p=0.5):
         self.p = p
+        print('using RandomCrop !')
+        write_to_file('using RandomCrop !', log_file_path)
+
     def __call__(self, data):
         if not isinstance(data, tuple):
             raise Exception('Warning: RandomCrop only support training process now !!')
@@ -127,6 +135,9 @@ class RandomCrop(object):
 class RandomHorizontalFlip(object):
     def __init__(self, p=0.5):
         self.p = p
+        print('using RandomHorizontalFlip !')
+        write_to_file('using RandomHorizontalFlip !', log_file_path)
+
     def __call__(self, data):
         if not isinstance(data, tuple):
             raise Exception('Warning: RandomHorizontalFlip only support training process now !!')
@@ -144,6 +155,9 @@ class RandomHorizontalFlip(object):
 class ImgProcess(object):
     def __init__(self, target_shape):
         self.target_shape = target_shape
+        self.already_showed_sample = True
+        print('using ImgProcess !')
+        write_to_file('using ImgProcess !', log_file_path)
 
     def __call__(self, data):
         if not isinstance(data, tuple):
@@ -177,23 +191,26 @@ class ImgProcess(object):
             bboxes[:, [1, 3]] = bboxes[:, [1, 3]] * resize_ratio + dh
 
             ######
-            # img_out = image_paded.copy()
-            # for box in bboxes:
-            #     xmin = int(box[0])
-            #     ymin = (box[1])
-            #     xmax = (box[2])
-            #     ymax = (box[3])
-            #     img_out = cv2.rectangle(img_out, (xmin, ymin), (xmax, ymax), color=(0, 0, 255))
-            # cv2.imwrite('crop.jpg', img_out)
-            # self.already_showed_sample = True
+            if not self.already_showed_sample:
+                img_out = image_paded.copy()
+                for box in bboxes:
+                    xmin = int(box[0])
+                    ymin = (box[1])
+                    xmax = (box[2])
+                    ymax = (box[3])
+                    img_out = cv2.rectangle(img_out, (xmin, ymin), (xmax, ymax), color=(0, 0, 255))
+                cv2.imwrite('crop.jpg', img_out)
+                self.already_showed_sample = True
             ######
 
             image = image_paded / 255.0
-            return (image, bboxes)
+            return (image, bboxes, ((h_org, w_org), ((resize_ratio,resize_ratio), (dw, dh))))
 
 
-###### clw note: not used yet ######
 
+#############################################################
+# clw note: not used yet
+#############################################################
 import dataset.transforms.image as timage
 import dataset.transforms.bbox as tbbox
 

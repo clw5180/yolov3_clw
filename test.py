@@ -67,7 +67,7 @@ def test(cfg,
 
 
     pbar = tqdm(dataloader)
-    for i, (img_tensor, target_tensor, img_path) in enumerate(pbar):
+    for i, (img_tensor, target_tensor, _, _) in enumerate(pbar):
 
         img_tensor = img_tensor.to(device)   # (bs, 3, 416, 416)
         target_tensor = target_tensor.to(device)
@@ -80,7 +80,6 @@ def test(cfg,
             output = model(img_tensor)[0]   # (x1, y1, x2, y2, obj_conf, class_conf, class_pred)
 
             # (2) NMS
-
             nms_output = non_max_suppression(output, conf_thres, nms_thres)
             s = 'time use per batch: %.3fs' % (time.time() - start)
 
@@ -154,7 +153,7 @@ def test(cfg,
         nt = torch.zeros(1)
 
     # Print results
-    time.sleep(0.01)  # clw note: 防止前面 tqdm 还没输出，但是这里已经打印了
+    # time.sleep(0.01)  # clw note: 防止前面 tqdm 还没输出，但是这里已经打印了
     #pf = '%20s' + '%10.3g' * 6  # print format
     pf = '%20s' + '%10s' + '%10.3g' * 5
     pf_value = pf % ('all', str(image_nums), nt.sum(), mp, mr, map, mf1)
@@ -194,8 +193,8 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, default='0,1', help='device id (i.e. 0 or 0,1,2,3) ') # 默认单卡
     parser.add_argument('--src-txt-path', type=str, default='./valid.txt', help='saved img_file_paths list')
     parser.add_argument('--dst-path', type=str, default='./output', help='save detect result in this folder')
-    #parser.add_argument('--weights', type=str, default='weights/last.pt', help='path to weights file')
-    parser.add_argument('--weights', type=str, default='weights/20200706_multiscale/last.pt', help='path to weights file')
+    parser.add_argument('--weights', type=str, default='weights/last.pt', help='path to weights file')
+    #parser.add_argument('--weights', type=str, default='weights/20200706_multiscale/last.pt', help='path to weights file')
     #parser.add_argument('--weights', type=str, default='weights/20200704_50epoch_modify_noobj/last.pt', help='path to weights file')
     #parser.add_argument('--weights', type=str, default='weights/yolov3.pt', help='path to weights file')
     parser.add_argument('--img-size', type=int, default=416, help='resize to this size square and detect')

@@ -112,7 +112,7 @@ def test(cfg,
     return calc_APs()
 
 
-def calc_APs(iou_thresh=0.5, use_07_metric=True):
+def calc_APs(iou_thresh=0.5, use_07_metric=False):
     """
     计算每个类别的ap值
     :param iou_thresh:
@@ -152,8 +152,9 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, default='0,1', help='device id (i.e. 0 or 0,1,2,3) ') # 默认单卡
     parser.add_argument('--src-txt-path', type=str, default='./valid.txt', help='saved img_file_paths list')
     parser.add_argument('--dst-path', type=str, default='./output', help='save detect result in this folder')
-    #parser.add_argument('--weights', type=str, default='weights/last.pt', help='path to weights file')
-    parser.add_argument('--weights', type=str, default='weights/20200706_multiscale/last.pt', help='path to weights file')
+    parser.add_argument('--weights', type=str, default='weights/last.pt', help='path to weights file')
+    #parser.add_argument('--weights', type=str, default='weights/20200709_modifynoobj_mAP0.661/last.pt', help='path to weights file')
+    #parser.add_argument('--weights', type=str, default='weights/20200706_multiscale/last.pt', help='path to weights file')
     #parser.add_argument('--weights', type=str, default='weights/yolov3-spp.pt', help='path to weights file')
     parser.add_argument('--img-size', type=int, default=416, help='resize to this size square and detect')
     parser.add_argument('--conf-thres', type=float, default=0.01, help='object confidence threshold')

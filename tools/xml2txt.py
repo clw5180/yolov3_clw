@@ -20,7 +20,7 @@ test_path = None
 class_name_path = '../cfg/voc.names' # 数据集类别名 list， 如 voc.names   coco.names
 img_format = 'jpg'
 train_with_difficult = True
-val_with_difficult = True
+val_with_difficult = False
 
 
 # 从xml文件中提取bounding box信息和w,h信息, 格式为[[x_min, y_min, x_max, y_max, name]]

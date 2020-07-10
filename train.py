@@ -52,7 +52,7 @@ import random
 import torch.nn.functional as F
 
 ### 超参数
-lr0 = 3e-3
+lr0 = 1e-3
 momentum = 0.9
 weight_decay = 0.0005
 ###

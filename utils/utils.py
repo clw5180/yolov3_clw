@@ -223,6 +223,7 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
                 gts.append(gt_box)  # final batch; and gts looks like list[0]: [tensor1, tensor2....]  list[1]: [tensor1]
                 for i in range(bs - 1 - int(target[0])):  # clw note: 比如bs=64, 但是batch_idx=60以后都没有匹配的target，那么这里要加上相应数量的[]
                     gts.append([])
+                ###### clw note: can debug there
 
                 # print(len(gt_all))
                 gt_max_len = -1
@@ -237,6 +238,7 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
                         #print(batch_idx, target_idx)
                         gt_all[batch_idx, target_idx] = gts[batch_idx][target_idx]
 
+                ###### clw note: can debug
                 target_all.append(gt_all)  # gt_all: tensor(bs, n, 4), n is max gt num in batchsize images, such as 150 in Peterisfer
                 ######
 
@@ -350,17 +352,16 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
             noobj_mask = noobj_mask_all[i].bool()
 
         ###### clw note: borrowed from Peter's version,
-
         gt_boxes = target_all[i][:, :, :] * img_size   # (64, n, 4)   n is 150 in Peter's yolov3, there is the most gt num in a batch, such as 16
         p_boxes = p_box[i]   # (64, 3, 13, 13, 4)
         p_boxes = p_boxes.float()
         a = p_boxes.unsqueeze(4)  # (64, 3, 13, 13, 1, 4)
         b = gt_boxes.unsqueeze(1).unsqueeze(1).unsqueeze(1)  # (64, 1, 1, 1, n, 4)
         iou = iou_xywh_torch(a, b)  # (64, 3, 13, 13, n)
-        ### iou_max = iou.max(-1, keepdim=True)[0]  # (64, 3, 13, 13, 1)
-        iou_max = iou.max(-1)[0]  # clw modify:  (64, 3, 13, 13)
-        ###print('preds and gts iou mean:', iou.mean())
+        iou_max = iou.max(-1)[0]  # clw modify:  (64, 3, 13, 13, n) ->  (64, 3, 13, 13)，即对每一个pred和n个gt比较，如果iou都小于0.5，则该pred对应位置才会计入noobj，否则不计入
+        #aaa = noobj_mask.sum()  # 32, 3, 13, 13 -> sum: 16153
         noobj_mask = noobj_mask * (iou_max < 0.5)  # noobj_mask: (64, 3, 13, 13)
+        #bbb = noobj_mask.sum()  # 32, 3, 13, 13 -> sum: 15868
         ######
 
         tx = tx_all[i][obj_mask]  # 需要把gt所在的那个grid cell的预测结果拿出来
@@ -380,7 +381,7 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
         loss_y = MSEcoord(py, ty)
         loss_w = MSEcoord(pw, tw)
         loss_h = MSEcoord(ph, th)
-        lbox += loss_x + loss_y + loss_w + loss_h
+        lbox += (loss_x + loss_y + loss_w + loss_h)
 
         # 2、计算分类损失，这里只针对多类别，如果只有1个类那么只需要计算 obj 损失
         # if model.nc > 1:  # cls loss (only if multiple classes)
