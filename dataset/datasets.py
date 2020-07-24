@@ -10,14 +10,6 @@ import math
 from utils.utils import write_to_file
 from utils.globals import log_file_path
 
-'''
-读取自己数据的基本流程：
-1：制作存储了图像的路径和标签信息的txt
-2：将这些信息转化为list，该list每一个元素对应一个样本
-3：通过getitem函数，读取数据标签，并返回。
-
-可以把voc2007数据集拷过来，测一下
-'''
 
 class VocDataset(Dataset):  # for training/testing
     '''
@@ -102,7 +94,7 @@ class VocDataset(Dataset):  # for training/testing
 
     @staticmethod
     def train_collate_fn(batch):
-        img, label, path = list(zip(*batch))  # transposed
+        img, label, path, _ = list(zip(*batch))  # transposed
         for i, l in enumerate(label):
             l[:, 0] = i  # add target image index for build_targets()
         return torch.stack(img, 0), torch.cat(label, 0), path  # TODO：如 batch=4，需要对img进行堆叠

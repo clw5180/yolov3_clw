@@ -82,7 +82,7 @@ if __name__ == '__main__':
     # parser.add_argument('--cfg', type=str, default='cfg/voc_yolov3-spp.cfg', help='xxx.cfg file path')
     parser.add_argument('--cfg', type=str, default='cfg/voc_yolov3.cfg', help='xxx.cfg file path')
     parser.add_argument('--data', type=str, default='cfg/voc.data', help='xxx.data file path')
-    parser.add_argument('--device', default='0, 1', help="device id (i.e. 0 or 0,1,2,3) or '' ") # 如果为空，则默认使用所有当前可用的显卡
+    parser.add_argument('--device', default='0,1', help="device id (i.e. 0 or 0,1,2,3) or '' ") # 如果为空，则默认使用所有当前可用的显卡
     #parser.add_argument('--weights', type=str, default='weights/cspdarknet53-panet-spp.weights', help='path to weights file')
     # parser.add_argument('--weights', type=str, default='weights/resnet18.pth', help='path to weights file')
     # parser.add_argument('--weights', type=str, default='weights/resnet50.pth', help='path to weights file')
@@ -218,7 +218,7 @@ if __name__ == '__main__':
 
 
     #### 阶梯学习率
-    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(total_epochs * x) for x in [0.8, 0.9]], gamma=0.1)
+    #scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(total_epochs * x) for x in [0.8, 0.9]], gamma=0.1)
     ### 余弦学习率
     # lf = lambda x: (1 + math.cos(x * math.pi / total_epochs)) / 2
     # scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
@@ -406,8 +406,9 @@ if __name__ == '__main__':
             last_chkpt = {'epoch': epoch,
                           'model': model.module.state_dict() if type(model) is nn.parallel.DistributedDataParallel else model.state_dict(),  # clw note: 多卡
                           'optimizer': optimizer.state_dict()}
-
             torch.save(last_chkpt, model_save_path)
+            # Delete checkpoint
+            del last_chkpt
 
     print('Training end! total time use: %.3fs' % (time.time() - time0))
 
