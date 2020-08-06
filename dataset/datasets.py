@@ -11,7 +11,8 @@ from utils.utils import write_to_file
 from utils.globals import log_file_path
 
 
-class VocDataset(Dataset):  # for training/testing
+
+class VocDataset(Dataset):   # for training/testing
     '''
     类功能：给定训练集或测试集txt所在路径(该txt包含了训练集每一张图片的路径，一行对应一张图片，如 home/dataset/voc2007/train/cat1.jpg),
     以及图片大小img_size，制作可用于迭代的训练集；
@@ -20,6 +21,7 @@ class VocDataset(Dataset):  # for training/testing
     def __init__(self, txt_path, img_size, with_label, is_training):  # clw note: (1) with_label=True, is_training=True -> train
                                                                       #           (2) with_label=True, is_training=False -> test(no aug)
                                                                       #           (3) with_label=False, is_training=False -> detect
+
         # 1、获取所有图片路径，存入 list
         with open(txt_path, 'r') as f:
             self.img_file_paths = [x.replace(os.sep, '/') for x in f.read().splitlines()]
@@ -45,56 +47,90 @@ class VocDataset(Dataset):  # for training/testing
         self.transforms = build_transforms(img_size, is_training)
         self.img_size = img_size
         self.with_label = with_label
-        self.training = is_training
+        self.is_training = is_training
 
 
     def __len__(self):
         return len(self.img_file_paths)
 
     def __getitem__(self, index):
-        # 1、根据 index 读取相应图片，保存图片信息；如果是train/test 还需要读入label
+        # 0: for debug
+        # if '000411' in self.img_file_paths[index]:  # 出问题的图片路径可以在train.py的for循环读取数据那里找到，再回到这里调试
+        #     print('aaaaa')
+
+        # 1 根据 index 读取相应图片，保存图片信息；如果是train/test 还需要读入label
         if self.with_label:  # train or test
 
             if self.mosaic:
-                img, label, img_path = load_mosaic(self, index)
+                img, label = load_mosaic(self, index)
             else:
-                img, label, img_path = load_image(self, index)  # labels: ndarray (n, 5)
+                img, label = load_image(self, index)  # labels: ndarray (n, 5) -> (class, x, y, w, h)
 
             ### clw note: labels to tensor
             # labels = torch.zeros((len(label), 6))  # add one column to save batch_idx   # now labels: [ batch_idx, class_idx, x, y, w, h ]
             # labels[:, 1:] = torch.from_numpy(label)  # batch_idx is at the first colume, index 0
 
-            ### clw note: labels to ndarray
+            # 2 归一化后的xywh -> 实际尺寸xyxy，然后针对是 train/test 做相应的transform，对于train就是数据增强，对于test就是letterbox或resize
             h, w = img.shape[:2]
             label[:, 1] = w * label[:, 1] - w * label[:, 3] / 2
             label[:, 2] = h * label[:, 2] - h * label[:, 4] / 2
             label[:, 3] = w * label[:, 3] + label[:, 1]
             label[:, 4] = h * label[:, 4] + label[:, 2]
-            img, label[:, 1:5], shape = self.transforms(img, label[:, 1:5])
-            h, w = img.shape[:2]
+            new_img, label[:, 1:5], shape = self.transforms(img, label[:, 1:5])  # 各种数据增广
+            new_h, new_w = new_img.shape[:2]
+
+            # 2.1 如果是训练，还可以额外做一些数据增强，比如Mixup，CutMix等需要融合其他图的；cutout可以考虑放在transform里面做
+            if self.is_training:
+                # Mixup
+                # （1）原始的labels扩充一列，为该图的每一个box存mixup_ratio，便于后续计算损失
+                label = np.insert(label, 5, values=1, axis=1)
+                if random.random() < 0.5:
+                    mixup_ratio = np.random.beta(0.3, 0.3) # alpha = beta = 0.3;  or try fixed value: mixup_ratio = 0.5
+                    label[:, 5] = mixup_ratio
+                    # （2）随机在训练集所有数据（除了该图）中，随机抽一个样本，用来mixup
+                    r_index = random.choice(np.delete(np.arange(len(self.img_file_paths)), index))
+                    r_img, r_labels = load_image(self, r_index)
+                    # （3）为随机抽出的这个样本，同样扩充一列
+                    r_labels = np.insert(r_labels, 5, values=mixup_ratio, axis=1)
+                    r_h, r_w = r_img.shape[:2]
+                    #### （4）坐标变换，这里可以写成一个函数 因为和上面重复了  TODO
+                    r_labels[:, 1] = r_w * r_labels[:, 1] - r_w * r_labels[:, 3] / 2
+                    r_labels[:, 2] = r_h * r_labels[:, 2] - r_h * r_labels[:, 4] / 2
+                    r_labels[:, 3] = r_w * r_labels[:, 3] + r_labels[:, 1]
+                    r_labels[:, 4] = r_h * r_labels[:, 4] + r_labels[:, 2]
+                    r_img, r_labels[:, 1:5], shape = self.transforms(r_img, r_labels[:, 1:5])
+                    ###
+                    new_img = new_img * mixup_ratio + r_img * (1 - mixup_ratio)
+                    label = np.concatenate((label, r_labels), axis=0)
+
+            # 3 实际尺寸xyxy -> 归一化后xywh
             label = torch.from_numpy(label)
-            label_tensor = torch.zeros((len(label), 6))
+            label_tensor = torch.zeros((len(label), 7))  # bs, class, x, y, w, h, mixup_ratio
             label_tensor[:, 1] = label[:, 0]
-            label_tensor[:, 2] = (label[:, 1] + label[:, 3]) / 2 / w
-            label_tensor[:, 3] = (label[:, 2] + label[:, 4]) / 2 / h
-            label_tensor[:, 4] = (label[:, 3] - label[:, 1]) / w
-            label_tensor[:, 5] = (label[:, 4] - label[:, 2]) / h
+            label_tensor[:, 2] = (label[:, 1] + label[:, 3]) / 2 / new_w
+            label_tensor[:, 3] = (label[:, 2] + label[:, 4]) / 2 / new_h
+            label_tensor[:, 4] = (label[:, 3] - label[:, 1]) / new_w
+            label_tensor[:, 5] = (label[:, 4] - label[:, 2]) / new_h
+            label_tensor[:, 6] = (label[:, 5])
 
             # img_tensor, label_tensor, shape = self.transforms(img, labels)   # clw note: shape need to convert pred coord -> orig coord, then compute mAP； don't support RandomCrop, RandomAffline... for test, because of the coord convert is not easy
-            img = img.transpose(2, 0, 1)   # TODO
-            img = np.ascontiguousarray(img)  # TODO: 这句话如果不加，后面torch.from_numpy(img)会报错
-            img_tensor = torch.from_numpy(img).float()
-            return img_tensor, label_tensor, img_path, shape
+            new_img = new_img.transpose(2, 0, 1)   # TODO
+            new_img = np.ascontiguousarray(new_img)  # TODO: 这句话如果不加，后面torch.from_numpy(img)会报错
+            img_tensor = torch.from_numpy(new_img).float()
 
-        else:   # detect
-            img, img_path = load_image(self, index)
+            if self.is_training:  # train
+                return img_tensor, label_tensor, self.img_file_paths[index]
+            else:              # test
+                return img_tensor, label_tensor, self.img_file_paths[index], shape
+        else:                  # detect
+            img = load_image(self, index)
             img_tensor, shape = self.transforms(img)
-            return img_tensor, img_path, shape
+            return img_tensor, self.img_file_paths[index], shape
 
 
     @staticmethod
     def train_collate_fn(batch):
-        img, label, path, _ = list(zip(*batch))  # transposed
+        img, label, path = list(zip(*batch))  # transposed
         for i, l in enumerate(label):
             l[:, 0] = i  # add target image index for build_targets()
         return torch.stack(img, 0), torch.cat(label, 0), path  # TODO：如 batch=4，需要对img进行堆叠
@@ -114,6 +150,10 @@ class VocDataset(Dataset):  # for training/testing
         img_tensor = torch.stack(img_tensor, 0)
         return img_tensor, img_path, shape  # TODO：如 batch=4，需要对img和label进行堆叠
 
+
+
+
+
 def load_image(self, index):
     img_path = self.img_file_paths[index]
     img = cv2.imread(img_path)
@@ -125,9 +165,9 @@ def load_image(self, index):
             labels = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)
             if len(labels) == 0:
                 raise Exception('Not support pure negative sample yet!')
-        return img, labels, img_path
+        return img, labels
     else:
-        return img, img_path
+        return img
 
 
 def load_mosaic(self, index):
@@ -141,7 +181,7 @@ def load_mosaic(self, index):
     for i, index in enumerate(indices):
 
         # Load image
-        img, x, img_path = load_image(self, index)
+        img, x = load_image(self, index)
         ######  clw add: for debug
         # if '2008_008470' in img_path:
         #     print('bbb')
@@ -243,7 +283,7 @@ def load_mosaic(self, index):
     labels[:, 3] = box_w
     labels[:, 4] = box_h
 
-    return img, labels, img_path
+    return img, labels
 
 
 def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10, border=0):

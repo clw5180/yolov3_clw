@@ -9,9 +9,9 @@ from utils.utils import write_to_file
 def build_transforms(img_size, is_train=False):
     if is_train:
         transform = Compose([
-            RandomHorizontalFlip(),
-            RandomCrop(),
-            RandomTranslate(),
+            #RandomHorizontalFlip(),
+            #RandomCrop(),
+            #RandomTranslate(),
             ImgProcess(img_size)  # pad not support yet
             # Resize(img_size),
             # Normalize(),

@@ -291,6 +291,7 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
         #         print(error_mask)
         ################################################################################################
 
+        #print(b, a, gj, gi)  # for debug
         obj_mask[b, a, gj, gi] = 1
         #aaa = torch.sum(obj_mask)  # TODO: aaa is 200, not 201, so some anchor match 2 gt
         noobj_mask[b, a, gj, gi] = 0
@@ -331,9 +332,9 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
 ### new version
 def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个list包含3个tensor，维度(bs,3,13,13,25), (bs,3,26,26,25)....
                                              # p_box: 一个list包含3个tensor，维度(bs,3,13,13,4), (bs,3,26,26,4)....   targets: (n, 6)
-
     lcls, lbox, lobj = torch.cuda.FloatTensor([0]), torch.cuda.FloatTensor([0]), torch.cuda.FloatTensor([0])  #ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor  # clw note: 暂时不支持cpu，太慢
     bs = p[0].size(0)  # clw note: batchsize
+
     obj_mask_all, noobj_mask_all, tx_all, ty_all, tw_all, th_all, tcls_all, target_all = build_targets(model, bs, targets)
 
     # Define criteria
@@ -355,9 +356,9 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
         gt_boxes = target_all[i][:, :, :] * img_size   # (64, n, 4)   n is 150 in Peter's yolov3, there is the most gt num in a batch, such as 16
         p_boxes = p_box[i]   # (64, 3, 13, 13, 4)
         p_boxes = p_boxes.float()
-        a = p_boxes.unsqueeze(4)  # (64, 3, 13, 13, 1, 4)
-        b = gt_boxes.unsqueeze(1).unsqueeze(1).unsqueeze(1)  # (64, 1, 1, 1, n, 4)
-        iou = iou_xywh_torch(a, b)  # (64, 3, 13, 13, n)
+        p_tmp = p_boxes.unsqueeze(4)  # (64, 3, 13, 13, 1, 4)
+        gt_tmp = gt_boxes.unsqueeze(1).unsqueeze(1).unsqueeze(1)  # (64, 1, 1, 1, n, 4)
+        iou = iou_xywh_torch(p_tmp, gt_tmp)  # (64, 3, 13, 13, n)
         iou_max = iou.max(-1)[0]  # clw modify:  (64, 3, 13, 13, n) ->  (64, 3, 13, 13)，即对每一个pred和n个gt比较，如果iou都小于0.5，则该pred对应位置才会计入noobj，否则不计入
         #aaa = noobj_mask.sum()  # 32, 3, 13, 13 -> sum: 16153
         noobj_mask = noobj_mask * (iou_max < 0.5)  # noobj_mask: (64, 3, 13, 13)
