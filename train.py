@@ -52,7 +52,8 @@ import random
 import torch.nn.functional as F
 
 ### 超参数
-lr0 = 1e-3
+#lr0 = 1e-3  # 在kaggle小麦数据集上损失溢出
+lr0 = 1e-4
 momentum = 0.9
 weight_decay = 0.0005
 ###
@@ -80,29 +81,34 @@ if __name__ == '__main__':
     # parser.add_argument('--cfg', type=str, default='cfg/resnet50.cfg', help='xxx.cfg file path')
     # parser.add_argument('--cfg', type=str, default='cfg/resnet101.cfg', help='xxx.cfg file path')
     # parser.add_argument('--cfg', type=str, default='cfg/voc_yolov3-spp.cfg', help='xxx.cfg file path')
-    parser.add_argument('--cfg', type=str, default='cfg/voc_yolov3.cfg', help='xxx.cfg file path')
-    parser.add_argument('--data', type=str, default='cfg/voc.data', help='xxx.data file path')
+    #parser.add_argument('--cfg', type=str, default='cfg/voc_yolov3.cfg', help='xxx.cfg file path')
+    parser.add_argument('--cfg', type=str, default='cfg/wheat_yolov3-spp.cfg', help='xxx.cfg file path')
+    #parser.add_argument('--data', type=str, default='cfg/voc.data', help='xxx.data file path')
+    parser.add_argument('--data', type=str, default='cfg/wheat.data', help='xxx.data file path')
     parser.add_argument('--device', default='0,1', help="device id (i.e. 0 or 0,1,2,3) or '' ") # 如果为空，则默认使用所有当前可用的显卡
     #parser.add_argument('--weights', type=str, default='weights/cspdarknet53-panet-spp.weights', help='path to weights file')
     # parser.add_argument('--weights', type=str, default='weights/resnet18.pth', help='path to weights file')
     # parser.add_argument('--weights', type=str, default='weights/resnet50.pth', help='path to weights file')
     #parser.add_argument('--weights', type=str, default='weights/resnet101.pth', help='path to weights file')
     #parser.add_argument('--weights', type=str, default='weights/yolov3-spp.pt', help='path to weights file')
+    parser.add_argument('--weights', type=str, default='weights/yolov3-spp-ultralytics.pt', help='path to weights file')
     #parser.add_argument('--weights', type=str, default='weights/yolov3.pt', help='path to weights file')
     #parser.add_argument('--weights', type=str, default='weights/yolov3.weights', help='path to weights file')
-    parser.add_argument('--weights', type=str, default='weights/darknet53.conv.74', help='path to weights file')
+    #parser.add_argument('--weights', type=str, default='weights/darknet53.conv.74', help='path to weights file')
     #parser.add_argument('--weights', type=str, default='', help='path to weights file')
     #parser.add_argument('--weights', type=str, default='', help='path to weights file')
-    parser.add_argument('--img-size', type=int, default=416, help='resize to this size square and detect')
+    parser.add_argument('--img-size', type=int, default=1024, help='resize to this size square and detect')
     parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--batch-size', type=int, default=64)  # effective bs = batch_size * accumulate = 16 * 4 = 64
-    #parser.add_argument('--batch-size', type=int, default=16)
+    #parser.add_argument('--batch-size', type=int, default=64)  # effective bs = batch_size * accumulate = 16 * 4 = 64
+    parser.add_argument('--batch-size', type=int, default=8)
     opt = parser.parse_args()
     print(opt)
 
     device = select_device(opt.device)
+    write_to_file('\n', log_file_path)
     if device == 'cpu':
         mixed_precision = False
+
 
     # 0、Initialize parameters( set random seed, get cfg info, )
     cfg = opt.cfg
@@ -250,7 +256,6 @@ if __name__ == '__main__':
         print('using multi_scale !')
         write_to_file('using multi_scale !', log_file_path)
 
-
     # 4、训练
     print('')   # 换行
     print('Starting training for %g epochs...' % total_epochs)
@@ -319,7 +324,8 @@ if __name__ == '__main__':
             # Multi-Scale training
             if multi_scale:
                 if ni  % 1 == 0:  #  adjust (67% - 150%) every 1 or 10 batches
-                    img_size = random.randrange(10, 19 + 1) * 32
+                    #img_size = random.randrange(10, 19 + 1) * 32
+                    img_size = random.randrange(24, 32 + 1) * 32
                 ##ns = [math.ceil(x * sf / 32.) * 32 for x in imgs.shape[2:]]  # new shape (stretched to 32-multiple)
                 img_tensor = F.interpolate(img_tensor, size=(img_size, img_size), mode='bilinear', align_corners=False)
 
@@ -387,17 +393,16 @@ if __name__ == '__main__':
         # scheduler.step()
 
         # compute mAP
-        if epoch >= 3:  # clw note: avoid nms cause too much time.
+        #if epoch >= 3 and epoch % 5 == 0:  # clw note: avoid nms cause too much time for epoch1 and epoch2
+        if epoch >= 3:  # clw note: avoid nms cause too much time for epoch1 and epoch2
             results, maps = test.test(cfg,
-            #test2.test(cfg,
-                      'cfg/voc.data',
+                      opt.data,
                       batch_size=batch_size,
                       img_size=img_size,
                       conf_thres=0.01,
                       iou_thres=0.5,
                       nms_thres=0.5,
                       src_txt_path=valid_txt_path,
-                      dst_path='./output',
                       weights=None,
                       log_file_path=log_file_path,
                       model=model)
@@ -407,6 +412,7 @@ if __name__ == '__main__':
                           'model': model.module.state_dict() if type(model) is nn.parallel.DistributedDataParallel else model.state_dict(),  # clw note: 多卡
                           'optimizer': optimizer.state_dict()}
             torch.save(last_chkpt, model_save_path)
+
             # Delete checkpoint
             del last_chkpt
 

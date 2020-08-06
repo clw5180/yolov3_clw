@@ -533,7 +533,6 @@ def select_device(device):  # 暂时不支持 CPU
             s = ' ' * len(s)
         print("%sdevice%g _CudaDeviceProperties(name='%s', total_memory=%dMB)" % (s, gpu_idxs[i], x[i].name, x[i].total_memory / 1024 ** 2))  # bytes to MB
     print('')
-    write_to_file('\n', log_file_path)
 
     '''
     Using CUDA device0 _CudaDeviceProperties(name='GeForce GTX 1080', total_memory=8116MB)

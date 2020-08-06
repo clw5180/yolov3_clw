@@ -156,8 +156,6 @@ class ImgProcess(object):
     def __init__(self, target_shape):
         self.target_shape = target_shape
         self.already_showed_sample = True
-        print('using ImgProcess !')
-        write_to_file('using ImgProcess !', log_file_path)
 
     def __call__(self, data):
         if not isinstance(data, tuple):

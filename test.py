@@ -22,14 +22,11 @@ def test(cfg,
          iou_thres,
          nms_thres,
          src_txt_path,
-         dst_path,
          weights,
-         log_file_path,
+         log_file_path=None,
          model=None):
 
     # 0、初始化一些参数
-    if not os.path.exists(dst_path):
-        os.mkdir(dst_path)
     data = parse_data_cfg(data)
     nc = int(data['classes'])  # number of classes
     names = load_classes(data['names'])
@@ -37,10 +34,10 @@ def test(cfg,
 
     # 1、加载网络
     if model is None:
-        device = select_device(opt.device)
+        device = select_device('0, 1')
         model = Darknet(cfg)
         if weights.endswith('.pt'):      # TODO: .weights权重格式
-            model.load_state_dict(torch.load(weights)['model']) # 20200704_50epoch_modify_noobj   # TODO：map_location=device ？
+            model.load_state_dict(torch.load(weights, map_location=device)['model']) # 20200704_50epoch_modify_noobj   # TODO：map_location=device ？
         if torch.cuda.device_count() > 1:
             model = nn.DataParallel(model)  # clw note: 多卡
     else:
@@ -185,35 +182,33 @@ def test(cfg,
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cfg', type=str, default='cfg/voc_yolov3.cfg', help='xxx.cfg file path')
+    #parser.add_argument('--cfg', type=str, default='cfg/voc_yolov3.cfg', help='xxx.cfg file path')
+    parser.add_argument('--cfg', type=str, default='cfg/wheat_yolov3-spp.cfg', help='xxx.cfg file path')
     #parser.add_argument('--cfg', type=str, default='cfg/voc_yolov3-spp.cfg', help='xxx.cfg file path')
     #parser.add_argument('--cfg', type=str, default='cfg/yolov3-spp.cfg', help='xxx.cfg file path')
     parser.add_argument('--data', type=str, default='cfg/voc.data', help='xxx.data file path')
-    parser.add_argument('--batch-size', type=int, default=64)
+    parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--device', type=str, default='0,1', help='device id (i.e. 0 or 0,1,2,3) ') # 默认单卡
     parser.add_argument('--src-txt-path', type=str, default='./valid.txt', help='saved img_file_paths list')
-    parser.add_argument('--dst-path', type=str, default='./output', help='save detect result in this folder')
     parser.add_argument('--weights', type=str, default='weights/last.pt', help='path to weights file')
     #parser.add_argument('--weights', type=str, default='weights/20200706_multiscale/last.pt', help='path to weights file')
     #parser.add_argument('--weights', type=str, default='weights/20200704_50epoch_modify_noobj/last.pt', help='path to weights file')
     #parser.add_argument('--weights', type=str, default='weights/yolov3.pt', help='path to weights file')
-    parser.add_argument('--img-size', type=int, default=416, help='resize to this size square and detect')
+    parser.add_argument('--img-size', type=int, default=1024, help='resize to this size square and detect')
     parser.add_argument('--conf-thres', type=float, default=0.01, help='object confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.5, help='iou threshold for compute mAP')
+    parser.add_argument('--iou-thres', type=float, default=0.75, help='iou threshold for compute mAP')
     parser.add_argument('--nms-thres', type=float, default=0.5, help='iou threshold for non-maximum suppression')
 
     opt = parser.parse_args()
     print(opt)
 
-    with torch.no_grad():
-        test(opt.cfg,
-             opt.data,
-             opt.batch_size,
-             opt.img_size,
-             opt.conf_thres,
-             opt.iou_thres,
-             opt.nms_thres,
-             opt.src_txt_path,
-             opt.dst_path,
-             opt.weights,
-             log_file_path=None)
+
+    test(opt.cfg,
+         opt.data,
+         opt.batch_size,
+         opt.img_size,
+         opt.conf_thres,
+         opt.iou_thres,
+         opt.nms_thres,
+         opt.src_txt_path,
+         opt.weights)

@@ -11,13 +11,16 @@ import shutil
 from utils.parse_config import parse_data_cfg
 from utils.utils import load_classes
 
-train_path = '/home/user/dataset/voc2007/train'
+#train_path = '/home/user/dataset/voc2007/train'
+train_path = '/home/user/dataset/wheat/train'
 #train_path = '/home/clwclw/dataset/voc2007/train'
 #train_path = None
-valid_path = '/home/user/dataset/voc2007/val'
+#valid_path = '/home/user/dataset/voc2007/val'
+valid_path = '/home/user/dataset/wheat/val'
 #valid_path = '/home/clwclw/dataset/voc2007/val'
 test_path = None
-class_name_path = '../cfg/voc.names' # 数据集类别名 list， 如 voc.names   coco.names
+#class_name_path = '../cfg/voc.names' # 数据集类别名 list， 如 voc.names   coco.names
+class_name_path = '../cfg/wheat.names' # 数据集类别名 list， 如 voc.names   coco.names
 img_format = 'jpg'
 train_with_difficult = True
 val_with_difficult = True
