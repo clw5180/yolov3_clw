@@ -85,7 +85,8 @@ class VocDataset(Dataset):   # for training/testing
                 # （1）原始的labels扩充一列，为该图的每一个box存mixup_ratio，便于后续计算损失
                 label = np.insert(label, 5, values=1, axis=1)
                 if random.random() < 0.5:
-                    mixup_ratio = np.random.beta(0.3, 0.3) # alpha = beta = 0.3;  or try fixed value: mixup_ratio = 0.5
+                    #mixup_ratio = np.random.beta(0.3, 0.3) # alpha = beta = 0.3;  or try fixed value: mixup_ratio = 0.5
+                    mixup_ratio = np.random.beta(1.5, 1.5) # alpha = beta = 0.3;  or try fixed value: mixup_ratio = 0.5
                     label[:, 5] = mixup_ratio
                     # （2）随机在训练集所有数据（除了该图）中，随机抽一个样本，用来mixup
                     r_index = random.choice(np.delete(np.arange(len(self.img_file_paths)), index))
@@ -111,7 +112,8 @@ class VocDataset(Dataset):   # for training/testing
             label_tensor[:, 3] = (label[:, 2] + label[:, 4]) / 2 / new_h
             label_tensor[:, 4] = (label[:, 3] - label[:, 1]) / new_w
             label_tensor[:, 5] = (label[:, 4] - label[:, 2]) / new_h
-            label_tensor[:, 6] = (label[:, 5])
+            if self.is_training:
+                label_tensor[:, 6] = (label[:, 5])
 
             # img_tensor, label_tensor, shape = self.transforms(img, labels)   # clw note: shape need to convert pred coord -> orig coord, then compute mAP； don't support RandomCrop, RandomAffline... for test, because of the coord convert is not easy
             new_img = new_img.transpose(2, 0, 1)   # TODO

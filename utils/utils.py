@@ -155,7 +155,7 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
     tx_all, ty_all, th_all, tw_all = [], [], [], []
     obj_mask_all, noobj_mask_all = [], []
     target_all = []  # clw note: 在compute_loss中转化为gt，然后计算pred和gt的iou，大于0.5的计算 noobj损失
-
+    mixup_ratios_all = []
 
     multi_gpu = type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
     use_all_anchors = True
@@ -175,6 +175,7 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
         ty = FloatTensor(bs, na, ng, ng).fill_(0)
         tw = FloatTensor(bs, na, ng, ng).fill_(0)
         th = FloatTensor(bs, na, ng, ng).fill_(0)
+        tmixup_ratios = FloatTensor(bs, na, ng, ng).fill_(1)
         tcls = FloatTensor(bs, na, ng, ng, nc).fill_(0)
 
         # iou of targets-anchors
@@ -183,11 +184,11 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
         gwh = targets[:, 4:6] * ng  # (171, 2)
         gxy = targets[:, 2:4] * ng  # grid x, y
         gxywh = torch.cat((gxy, gwh), 1)  # clw note: TODO
+        gmixup_ratios = targets[:, 6]
 
         if nt:
             #iou = torch.stack([wh_iou(x, gwh) for x in anchor_vec], 0)
             iou = torch.stack([bboxes_anchor_iou(gxywh, anchor, x1y1x2y2=False) for anchor in anchor_vec], 0)  # clw modify: wh_iou is not accurate enough
-
             if use_all_anchors:
                 iou_mask = (iou > 0.3)
                 target_mask = iou_mask.sum(0) > 0
@@ -231,7 +232,7 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
                     # print(i, len(gt_all[i]))
                     if len(gts[batch_idx]) > gt_max_len:
                         gt_max_len = len(gts[batch_idx])
-                gt_all = torch.cuda.FloatTensor(len(gts), gt_max_len ,4).fill_(0)
+                gt_all = torch.cuda.FloatTensor(len(gts), gt_max_len ,5).fill_(0)   # 5 -> (x, y, w, h, mixup_ratio)
 
                 for batch_idx in range(len(gts)):
                     for target_idx in range(len(gts[batch_idx])):
@@ -247,6 +248,7 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
                 targets_cur = targets_cur.repeat([na, 1])
                 gxy = gxy.repeat([na, 1])
                 gwh = gwh.repeat([na, 1])
+                gmixup_ratios = gmixup_ratios.repeat(na)
 
                 ###### clw modify
                 # if pytorch_version_minor <= 1:  # pytorch 1.1 or less
@@ -262,15 +264,15 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
 
 
                 iou_mask = iou_mask.view(-1)
-                targets_cur, a, gxy, gwh = targets_cur[iou_mask], a[iou_mask], gxy[iou_mask], gwh[iou_mask]
+                targets_cur, a, gxy, gwh, gmixup_ratios = targets_cur[iou_mask], a[iou_mask], gxy[iou_mask], gwh[iou_mask], gmixup_ratios[iou_mask]
 
 
             else:  # use best anchor only
                 _, a = iou.max(0)  # best iou and anchor,  for example: nt=201, a:(201,), iou:(201,)
 
         # Indices
-        b, c = targets_cur[:, :2].long().t()  # target image, class
-        gi, gj = gxy.long().t()  # grid x, y indices
+        batch_idx, class_id = targets_cur[:, :2].long().t()  # target image, class
+        gi, gj = gxy.long().t()  # 整数，表示target所在grid的索引，形如(x, y)
 
         ################################################################################################
         # clw add: for debug the error -> RuntimeError: CUDA error: device-side assert triggered terminate called after throwing an instance of 'c10::Error' what():  CUDA error: device-side assert triggered
@@ -291,42 +293,45 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
         #         print(error_mask)
         ################################################################################################
 
-        #print(b, a, gj, gi)  # for debug
-        obj_mask[b, a, gj, gi] = 1
+        #print(batch_idx, a, gj, gi)  # for debug
+        obj_mask[batch_idx, a, gj, gi] = 1
         #aaa = torch.sum(obj_mask)  # TODO: aaa is 200, not 201, so some anchor match 2 gt
-        noobj_mask[b, a, gj, gi] = 0
+        noobj_mask[batch_idx, a, gj, gi] = 0
 
         # Set noobj mask to zero where iou exceeds ignore threshold
         if not use_all_anchors:  # use best anchor, such as paper did
             for i, iou_ in enumerate(iou.t()):  # iou.t(): (201, 3)    iou_: (3,)
-                noobj_mask[b[i], iou_ > 0.5, gj[i], gi[i]] = 0    # 0.5 is ignore_thres, such as paper said
+                noobj_mask[batch_idx[i], iou_ > 0.5, gj[i], gi[i]] = 0    # 0.5 is ignore_thres, such as paper said
 
 
         obj_mask_all.append(obj_mask)
         noobj_mask_all.append(noobj_mask)
 
-        # GIoU
+        # 在上面筛选出和anchor的iou符合要求的那些gt之后，把这些gt记录下来，作为compute_loss() 希望回归的目标；
+        # 并且转化为回归时所需要的格式，比如实际要回归的是cell的偏差 gx - gx.floor()，而不是gt的实际坐标 gx
         gx, gy = gxy.t()
         gw, gh = gwh.t()
-        tx[b, a, gj, gi] = gx - gx.floor()  # TODO: if there is the situation that some anchor match 2 gt, the anchor will match the last
-        ty[b, a, gj, gi] = gy - gy.floor()  #
-        tw[b, a, gj, gi] = torch.log(gw / anchor_vec[a][:, 0] + 1e-16)
-        th[b, a, gj, gi] = torch.log(gh / anchor_vec[a][:, 1] + 1e-16)
+        tx[batch_idx, a, gj, gi] = gx - gx.floor()  # TODO: if there is the situation that some anchor match 2 gt, the anchor will match the last
+        ty[batch_idx, a, gj, gi] = gy - gy.floor()  #
+        tw[batch_idx, a, gj, gi] = torch.log(gw / anchor_vec[a][:, 0] + 1e-16)
+        th[batch_idx, a, gj, gi] = torch.log(gh / anchor_vec[a][:, 1] + 1e-16)
+        tmixup_ratios[batch_idx, a, gj, gi] = gmixup_ratios
         # tbox.append(torch.cat((gxy, gwh), 1))  # xywh (grids)
         tx_all.append(tx)
         ty_all.append(ty)
         tw_all.append(tw)
         th_all.append(th)
+        mixup_ratios_all.append(tmixup_ratios)
 
         # Class
-        tcls[b, a, gj, gi, c] = 1
+        tcls[batch_idx, a, gj, gi, class_id] = 1
         tcls_all.append(tcls)
 
-        if c.shape[0]:  # if any targets
-            assert c.max() <= model.nc, 'Model accepts %g classes labeled from 0-%g, however you supplied a label %g. See \
-                                        https://github.com/ultralytics/yolov3/wiki/Train-Custom-Data' % (model.nc, model.nc - 1, c.max())
+        if class_id.shape[0]:  # if any targets
+            assert class_id.max() <= model.nc, 'Model accepts %g classes labeled from 0-%g, however you supplied a label %g. See \
+                                        https://github.com/ultralytics/yolov3/wiki/Train-Custom-Data' % (model.nc, model.nc - 1, class_id.max())
 
-    return obj_mask_all, noobj_mask_all, tx_all, ty_all, tw_all, th_all, tcls_all, target_all
+    return obj_mask_all, noobj_mask_all, tx_all, ty_all, tw_all, th_all, tcls_all, target_all, mixup_ratios_all
 
 
 ### new version
@@ -335,10 +340,11 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
     lcls, lbox, lobj = torch.cuda.FloatTensor([0]), torch.cuda.FloatTensor([0]), torch.cuda.FloatTensor([0])  #ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor  # clw note: 暂时不支持cpu，太慢
     bs = p[0].size(0)  # clw note: batchsize
 
-    obj_mask_all, noobj_mask_all, tx_all, ty_all, tw_all, th_all, tcls_all, target_all = build_targets(model, bs, targets)
+    obj_mask_all, noobj_mask_all, tx_all, ty_all, tw_all, th_all, tcls_all, target_all, mixup_ratios_all = build_targets(model, bs, targets)
 
     # Define criteria
-    loss_reduction_type = 'sum'  # Loss reduction (sum or mean)  # reduction：控制损失输出模式。设为"sum"表示对样本进行求损失和；设为"mean"表示对样本进行求损失的平均值；而设为"none"表示对样本逐个求损失，输出与输入的shape一样。
+    #loss_reduction_type = 'sum'  # Loss reduction (sum or mean)  # reduction：控制损失输出模式。设为"sum"表示对样本进行求损失和；设为"mean"表示对样本进行求损失的平均值；而设为"none"表示对样本逐个求损失，输出与输入的shape一样。
+    loss_reduction_type = 'none'
     BCEcls = nn.BCEWithLogitsLoss(reduction=loss_reduction_type)  # withLogits的含义：输入也就是pred还会经过sigmoid, 然后再和label算二元交叉熵损失  loss = - [ ylog y^ + (1-y)log(1-y^) ]  其中y^是yolo_layer层输出的结果 tcls 经过 sigmoid 函数得到的，将输出结果转换到0~1之间，即该目标属于不同类别的概率值
     BCEobj = nn.BCEWithLogitsLoss(reduction=loss_reduction_type)  # 可选参数 weight=model.class_weights   TODO: 不同类别的损失，设置不同的权重，个人感觉有点类似 focal loss
     MSEcoord = nn.MSELoss(reduction=loss_reduction_type)
@@ -353,7 +359,7 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
             noobj_mask = noobj_mask_all[i].bool()
 
         ###### clw note: borrowed from Peter's version,
-        gt_boxes = target_all[i][:, :, :] * img_size   # (64, n, 4)   n is 150 in Peter's yolov3, there is the most gt num in a batch, such as 16
+        gt_boxes = target_all[i][:, :, :4] * img_size   # (64, n, 4)   n is 150 in Peter's yolov3, there is the most gt num in a batch, such as 16
         p_boxes = p_box[i]   # (64, 3, 13, 13, 4)
         p_boxes = p_boxes.float()
         p_tmp = p_boxes.unsqueeze(4)  # (64, 3, 13, 13, 1, 4)
@@ -370,6 +376,7 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
         tw = tw_all[i][obj_mask]
         th = th_all[i][obj_mask]
         tcls = tcls_all[i][obj_mask]
+        max_ratio = mixup_ratios_all[i][obj_mask]
 
         # Compute losses
         # clw note: 如果有 gt，也就是不是纯负样本的图，那么需要计算 （1）位置损失  （2）分类损失
@@ -378,21 +385,34 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
         pw = pi[obj_mask][:, 2]
         ph = pi[obj_mask][:, 3]
 
-        loss_x = MSEcoord(px, tx)  # clw note: tx is 'tx_hat', and px is tx in paper
-        loss_y = MSEcoord(py, ty)
-        loss_w = MSEcoord(pw, tw)
-        loss_h = MSEcoord(ph, th)
+        # reduce = 'sum'
+        # loss_x = MSEcoord(px, tx)  # clw note: tx is 'tx_hat', and px is tx in paper
+        # loss_y = MSEcoord(py, ty)
+        # loss_w = MSEcoord(pw, tw)
+        # loss_h = MSEcoord(ph, th)
+
+        # reduce = 'none'
+        # obj_nums = len(tx)
+        loss_x = torch.matmul(MSEcoord(px, tx), max_ratio) # / obj_nums
+        loss_y = torch.matmul(MSEcoord(py, ty), max_ratio) # / obj_nums
+        loss_w = torch.matmul(MSEcoord(pw, tw), max_ratio) # / obj_nums
+        loss_h = torch.matmul(MSEcoord(ph, th), max_ratio) # / obj_nums
         lbox += (loss_x + loss_y + loss_w + loss_h)
 
         # 2、计算分类损失，这里只针对多类别，如果只有1个类那么只需要计算 obj 损失
         # if model.nc > 1:  # cls loss (only if multiple classes)
-        lcls += BCEcls(pi[obj_mask][:, 5:], tcls)
+        #lcls += BCEcls(pi[obj_mask][:, 5:], tcls)
+        aaa = BCEcls(pi[obj_mask][:, 5:], tcls).view(-1)
+        #bbb = max_ratio.reshape(obj_nums, 1).repeat(1, 20)
+        bbb = max_ratio.repeat(20)
+        lcls += torch.matmul(aaa, bbb) #  / obj_nums
         #lcls += CEcls(pi[:, 5:], tcls[i])  # TODO: 使用 CE    #  tcls是一个list，含有3个tensor，每个torch.size是308，形如 [2 1 14 14 14 6...]
 
         # 3、计算 obj 损失
         tconf = obj_mask.float()
-        loss_obj = BCEobj(pi[obj_mask][..., 4], tconf[obj_mask])
-        loss_noobj = BCEobj(pi[noobj_mask][..., 4],  tconf[noobj_mask])
+        #loss_obj = BCEobj(pi[obj_mask][..., 4], tconf[obj_mask])
+        loss_obj = torch.matmul(BCEobj(pi[obj_mask][..., 4], tconf[obj_mask]), max_ratio)  # / obj_nums
+        loss_noobj = BCEobj(pi[noobj_mask][..., 4],  tconf[noobj_mask]).sum()   #  / obj_nums
         loss_obj_all = loss_obj + loss_noobj
         lobj += loss_obj_all
 
