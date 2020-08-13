@@ -346,6 +346,8 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
     #loss_reduction_type = 'sum'  # Loss reduction (sum or mean)  # reduction：控制损失输出模式。设为"sum"表示对样本进行求损失和；设为"mean"表示对样本进行求损失的平均值；而设为"none"表示对样本逐个求损失，输出与输入的shape一样。
     loss_reduction_type = 'none'
     BCEcls = nn.BCEWithLogitsLoss(reduction=loss_reduction_type)  # withLogits的含义：输入也就是pred还会经过sigmoid, 然后再和label算二元交叉熵损失  loss = - [ ylog y^ + (1-y)log(1-y^) ]  其中y^是yolo_layer层输出的结果 tcls 经过 sigmoid 函数得到的，将输出结果转换到0~1之间，即该目标属于不同类别的概率值
+    #LabelSmooth = LabelSmoothing(reduction=loss_reduction_type)  # withLogits的含义：输入也就是pred还会经过sigmoid, 然后再和label算二元交叉熵损失  loss = - [ ylog y^ + (1-y)log(1-y^) ]  其中y^是yolo_layer层输出的结果 tcls 经过 sigmoid 函数得到的，将输出结果转换到0~1之间，即该目标属于不同类别的概率值
+    CEcls = nn.CrossEntropyLoss(reduction=loss_reduction_type)
     BCEobj = nn.BCEWithLogitsLoss(reduction=loss_reduction_type)  # 可选参数 weight=model.class_weights   TODO: 不同类别的损失，设置不同的权重，个人感觉有点类似 focal loss
     MSEcoord = nn.MSELoss(reduction=loss_reduction_type)
 
@@ -400,13 +402,59 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
         lbox += (loss_x + loss_y + loss_w + loss_h)
 
         # 2、计算分类损失，这里只针对多类别，如果只有1个类那么只需要计算 obj 损失
+        ### (1) normal BCE
         # if model.nc > 1:  # cls loss (only if multiple classes)
-        #lcls += BCEcls(pi[obj_mask][:, 5:], tcls)
+        #     lcls += BCEcls(pi[obj_mask][:, 5:], tcls)
+
+        ### (2) CE + label_smooth 0.1 -> mAP  0.689  P  0.178
+        ###                       0.01 -> mAP 0.688 P  0.157 结论：（1）labelsmooth有提升：综合后几轮来看mAP更高更稳定，且P明显更高
+        ###                                                       （2）CELoss和BCELoss相比，准确率P差的非常多，大概两倍多；
+        ###     注意如果使用CE，在model.py中改为torch.sigmoid_(io[..., 4])
+        # logsoftmax = nn.LogSoftmax(dim=1)
+        # LabelSmooth = LabelSmoothing()
+        # lcls_ = LabelSmooth( logsoftmax(pi[obj_mask][:, 5:]) , tcls.argmax(1) ).view(-1)
+        # a = max_ratio.reshape(-1, 1)
+        # b = a.repeat(1, model.nc)
+        # c = b.reshape(-1)
+        # lcls += torch.matmul(lcls_, c) #  / obj_nums
+        # ####
+
+        # (3) BCE + wrong mixup_ratio -> mAP 0.696
+        # aaa = BCEcls(pi[obj_mask][:, 5:], tcls).view(-1)
+        # bbb = max_ratio.repeat(20)
+        # lcls += torch.matmul(aaa, bbb) #  / obj_nums
+
+        # (3.5) BCE + right mixup_ratio -> mAP 0.703，P=0.357
+        # aaa = BCEcls(pi[obj_mask][:, 5:], tcls).view(-1)
+        # a = max_ratio.reshape(-1, 1)
+        # b = a.repeat(1, model.nc)
+        # bbb = b.reshape(-1)
+        # lcls += torch.matmul(aaa, bbb) #  / obj_nums
+
+        # (3.99) BCE + right mixup_ratio + LabelSmooth -> mAP ？
+        # ？？？？？？？？？？？？结论：（1）labelsmooth有提升：综合后几轮来看mAP更高更稳定，且P明显更高一点，大概0.02～0.03；加入label_smooth 更不容易发生负样本误识别
+        # 说明：上面的LabelSmooth类其实相当于CELoss做平滑，而不是BCELoss；这里手动把BCE的标签改一下；
+        # label_smooth
+        smoothing_factor = 0.05
+        indexes = tcls.argmax(1)
+        for i, index in enumerate(indexes):
+            tcls[i, index] = 1 - smoothing_factor -  smoothing_factor / (model.nc - 1)   # tcls: [0,0,0,....,0,1,0,0]
+        tcls[:, :] += smoothing_factor / (model.nc - 1)  # 额外减去smoothing_factor / (model.nc - 1)，再统一加上
+        # BCELoss
         aaa = BCEcls(pi[obj_mask][:, 5:], tcls).view(-1)
-        #bbb = max_ratio.reshape(obj_nums, 1).repeat(1, 20)
-        bbb = max_ratio.repeat(20)
+        a = max_ratio.reshape(-1, 1)
+        b = a.repeat(1, model.nc)
+        bbb = b.reshape(-1)
         lcls += torch.matmul(aaa, bbb) #  / obj_nums
-        #lcls += CEcls(pi[:, 5:], tcls[i])  # TODO: 使用 CE    #  tcls是一个list，含有3个tensor，每个torch.size是308，形如 [2 1 14 14 14 6...]
+
+        # (4) CE with sigmoid  -> mAP 0.66  #  tcls是一个list，含有3个tensor，每个torch.size是308，形如 [2 1 14 14 14 6...]
+        # lcls_ =  CEcls(pi[obj_mask][:, 5:], tcls.argmax(1))
+        # lcls += torch.matmul(lcls_, max_ratio)
+
+        # (4.5) CE without sigmoid，将models.py里面的torch.sigmoid_(io[..., 4:])改为torch.sigmoid_(io[..., 4])  -> mAP 0.681
+        # lcls_ =  CEcls(pi[obj_mask][:, 5:], tcls.argmax(1))
+        # lcls += torch.matmul(lcls_, max_ratio)
+
 
         # 3、计算 obj 损失
         tconf = obj_mask.float()
@@ -957,11 +1005,8 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):   # predicti
         if len(det_max):
             det_max = torch.cat(det_max)  # concatenate
             output[image_i] = det_max[(-det_max[:, 4]).argsort()]  # sort
-
     # print('clw:', count)
-
     return output   # list (64,)  ->  (n, 7)
-
 
 
 # Plotting functions ---------------------------------------------------------------------------------------------------
@@ -978,23 +1023,30 @@ def plot_one_box(x, img, color=None, label=None, line_thickness=None):
         cv2.rectangle(img, c1, c2, color, -1)  # filled
         cv2.putText(img, label, (c1[0], c1[1] - 2), 0, tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
 
+
 def load_classes(path):
     # Loads *.names file at 'path'
     with open(path, 'r') as f:
         names = f.read().split('\n')
     return list(filter(None, names))  # filter removes empty strings (such as last line)
 
+
 def init_seeds(seed=0):
     random.seed(seed)
     np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    torch.manual_seed(seed)   # 为CPU设置种子用于生成随机数，以确保结果是确定的
+    #torch.cuda.manual_seed(seed) # 为当前GPU设置随机数种子
+    torch.cuda.manual_seed_all(seed) # 如果使用多个GPU，应该使用为所有的GPU设置随机数种子。
+                                     # Sets the seed for generating random numbers on all GPUs. It’s safe to call
+                                     # this function if CUDA is not available; in that case, it is silently ignored.
 
-    # Remove randomness (may be slower on Tesla GPUs) # https://pytorch.org/docs/stable/notes/randomness.html
-    if seed == 0:
+    # Speed-reproducibility tradeoff https://pytorch.org/docs/stable/notes/randomness.html
+    if seed == 0:  # Remove randomness, slower, more reproducible
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+    else:  # faster, less reproducible
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
 
 
 def ap_per_class(tp, conf, pred_cls, target_cls):
@@ -1261,10 +1313,9 @@ def plot_images2(imgs, targets, paths=None, fname='images.jpg'):
     plt.close()
 
 
-def write_to_file(text, file='log.txt', mode='a'):
+def write_to_file(text, file, mode='a'):
     with open(file, mode) as f:
-        f.write(text + '\n')
-
+        f.write(str(text) + '\n')
 
 def print_model_biases(model):
     # prints the bias neurons preceding each yolo layer
@@ -1335,3 +1386,79 @@ def clip_coords(boxes, img_shape):
         boxes[:, [1, 3]] = boxes[:, [1, 3]].clamp(min=0, max=img_shape[0])  #         clip y
 
 
+# class LabelSmoothing(nn.Module):
+#     "Implement label smoothing.  size表示类别总数  "
+#     def __init__(self, smoothing=0.0, reduction='none'):  # reduction 一般是 'mean' or 'sum' or 'none'，还有个 'batchmean'
+#         super(LabelSmoothing, self).__init__()
+#
+#         assert 0 <= smoothing < 1, 'You must have 0 <= smoothing < 1 !!'
+#         self.criterion = nn.KLDivLoss(reduction=reduction) # clw note: size_average 和 reduce 这两个属性都已经Deprecated,
+#         # self.padding_idx = padding_idx
+#         self.confidence = 1.0 - smoothing  # if i=y的公式
+#         self.smoothing = smoothing
+#         self.true_dist = None
+#
+#     def forward(self, x, target):
+#         """
+#         x表示输入 (N，M)N个样本，M表示总类数，每一个类的概率log P
+#         target表示label（M，）
+#         """
+#         self.true_dist = x.data.clone()  # 先深复制过来
+#         self.true_dist.fill_(self.smoothing / (x.size(1) - 1))  # otherwise的公式
+#         self.true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
+#         #  clw note: “1” 表示按列填充， 在相应位置处填入self.confidence这个值
+#         #            target.data即相应class的索引，unsqueeze(1)后shape为(n, 1)
+#
+#         # clw note: not good ?
+#         # loss = self.criterion(x.log(), self.true_dist)
+#         # loss = loss.sum(axis=1, keepdim=False)
+#         # loss = loss.mean()
+#         # return loss
+#
+#         loss = -torch.log(x) * self.true_dist
+#         # loss = loss.sum(dim=1)
+#         # loss = loss.mean()
+#         return loss
+
+
+class LabelSmoothing(nn.NLLLoss):
+    """A soft version of negative log likelihood loss with support for label smoothing.
+
+    Effectively equivalent to PyTorch's :class:`torch.nn.NLLLoss`, if `label_smoothing`
+    set to zero. While the numerical loss values will be different compared to
+    :class:`torch.nn.NLLLoss`, this loss results in the same gradients. This is because
+    the implementation uses :class:`torch.nn.KLDivLoss` to support multi-class label
+    smoothing.
+
+    Args:
+        label_smoothing (float):
+            The smoothing parameter :math:`epsilon` for label smoothing. For details on
+            label smoothing refer `this paper <https://arxiv.org/abs/1512.00567v1>`__.
+        weight (:class:`torch.Tensor`):
+            A 1D tensor of size equal to the number of classes. Specifies the manual
+            weight rescaling applied to each class. Useful in cases when there is severe
+            class imbalance in the training set.
+        num_classes (int):
+            The number of classes.
+        size_average (bool):
+            By default, the losses are averaged for each minibatch over observations **as
+            well as** over dimensions. However, if ``False`` the losses are instead
+            summed. This is a keyword only parameter.
+    """
+
+    def __init__(self, label_smoothing=0.1, num_classes=20, **kwargs):
+        super(LabelSmoothing, self).__init__(**kwargs)
+        self.label_smoothing = label_smoothing
+        self.confidence = 1 - self.label_smoothing
+        self.num_classes = num_classes
+
+        assert label_smoothing >= 0.0 and label_smoothing <= 1.0
+
+        self.criterion = nn.KLDivLoss(reduction='none', **kwargs)
+
+    def forward(self, input, target):
+        one_hot = torch.zeros_like(input)
+        one_hot.fill_(self.label_smoothing / (self.num_classes - 1))
+        one_hot.scatter_(1, target.unsqueeze(1).long(), self.confidence)
+
+        return self.criterion(input, one_hot)

@@ -212,7 +212,8 @@ class YOLOLayer(nn.Module):
             return p, io[..., :4]
 
         else:  # inference
-            torch.sigmoid_(io[..., 4:])    # TODO
+            torch.sigmoid_(io[..., 4:])    # clw note TODO: BCELoss may need, but CELoss don't need ?
+            #torch.sigmoid_(io[..., 4])
 
             if self.nc == 1:
                 io[..., 5] = 1  # single-class model https://github.com/ultralytics/yolov3/issues/235

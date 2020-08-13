@@ -51,14 +51,13 @@ import math
 import random
 import torch.nn.functional as F
 
+
 ### 超参数
-#lr0 = 1e-3  # 在kaggle小麦数据集上损失溢出
+#lr0 = 1e-3  # 太大，在前几个epoch的mAP反而并不好；在kaggle小麦数据集上损失甚至会溢出；
 lr0 = 1e-4
 momentum = 0.9
 weight_decay = 0.0005
 ###
-
-os.makedirs(log_folder, exist_ok=True)
 
 ### 混合精度训练 ###
 mixed_precision = True
@@ -66,13 +65,12 @@ try:  # Mixed precision training https://github.com/NVIDIA/apex
     from apex import amp
 except:
     print('Waring: No Apex !!! ')  # https://github.com/NVIDIA/apex
+    write_to_file('Waring: No Apex !!! ', log_file_path)
     mixed_precision = False        # not installed
 if mixed_precision:
     print('Using Apex !!! ')
+    write_to_file('Using Apex !!! ', log_file_path)
 ######
-
-
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -104,15 +102,8 @@ if __name__ == '__main__':
     #parser.add_argument('--batch-size', type=int, default=8)
     #parser.add_argument('--batch-size', type=int, default=4)
     opt = parser.parse_args()
-    print(opt)
 
-    device = select_device(opt.device)
-    write_to_file('\n', log_file_path)
-    if device == 'cpu':
-        mixed_precision = False
-
-
-    # 0、Initialize parameters( set random seed, get cfg info, )
+    # 0、参数设置 ( 设置随机数种子，读取参数和配置文件信息 )
     cfg = opt.cfg
     weights = opt.weights
     img_size = opt.img_size
@@ -123,36 +114,42 @@ if __name__ == '__main__':
     train_txt_path = data['train']
     valid_txt_path = data['valid']
     nc = int(data['classes'])
+    device = select_device(opt.device)
 
-    # 0、打印配置文件信息，写log等
+    # 打印配置信息，写log等
+    print(opt)
     print('config file:', cfg)
     print('pretrained weights:', weights)
+    print('initial lr:', lr0)
+
+    os.makedirs(log_folder, exist_ok=True)
+    write_to_file(repr(opt), log_file_path)
+    write_to_file('config file:' + cfg, log_file_path)
+    write_to_file('pretrained weights:' + repr(weights), log_file_path)
+    write_to_file('initial lr:' + repr(lr0), log_file_path)
+
 
     # 1、加载模型
     model = Darknet(cfg).to(device)
     model.apply(weights_init_normal)  # clw note: without this can also get high mAP;   TODO
 
-    if weights.endswith('.pt'):
+    print('anchors:\n' + repr(model.module_defs[model.yolo_layers[0]]['anchors']))
+    write_to_file('anchors:\n' + repr(model.module_defs[model.yolo_layers[0]]['anchors']), log_file_path)
 
+    if weights.endswith('.pt'):
         ### model.load_state_dict(torch.load(weights)['model']) # 错误原因：没有考虑类别对不上的那一层，也就是yolo_layer前一层
-                                                                #          会报错size mismatch for module_list.81.Conv2d.weight: copying a param with shape torch.size([255, 1024, 1, 1]) from checkpoint, the shape in current model is torch.Size([75, 1024, 1, 1]).
-                                                               #           TODO：map_location=device ？
-        chkpt = torch.load(weights, map_location=device)
+                                                                # 会报错size mismatch for module_list.81.Conv2d.weight: copying a param with shape torch.size([255, 1024, 1, 1]) from checkpoint, the shape in current model is torch.Size([75, 1024, 1, 1]).
+        chkpt = torch.load(weights)
         try:
             chkpt['model'] = {k: v for k, v in chkpt['model'].items() if model.state_dict()[k].numel() == v.numel()}
             model.load_state_dict(chkpt['model'], strict=False)
-            # model.load_state_dict(chkpt['model'])
         except KeyError as e:
             s = "%s is not compatible with %s" % (opt.weights, opt.cfg)
             raise KeyError(s) from e
 
-        write_to_file(repr(opt), log_file_path, mode='w')
-        write_to_file('anchors:\n' + repr(model.module_defs[model.yolo_layers[0]]['anchors']), log_file_path)
-
     elif weights.endswith('.pth'):    # for 'https://download.pytorch.org/models/resnet50-19c8e357.pth',
         model_state_dict = model.state_dict()
         chkpt = torch.load(weights, map_location=device)
-        #try:
         state_dict = {}
         block_cnt = 0
         fc_item_num = 2
@@ -170,25 +167,17 @@ if __name__ == '__main__':
                     block_cnt += 1
                     state_dict[model_keys[i + block_cnt]] = model_values[i + block_cnt]
 
-
         #chkpt['model'] = {k: v for k, v in chkpt['model'].items() if model.state_dict()[k].numel() == v.numel()}
         model.load_state_dict(state_dict, strict=False)
-
         # model.load_state_dict(chkpt['model'])
-
         # except KeyError as e:
         #     s = "%s is not compatible with %s" % (opt.weights, opt.cfg)
         #     raise KeyError(s) from e
-
-        write_to_file(repr(opt), log_file_path, mode='w')
-        write_to_file('anchors:\n' +  repr(model.module_defs[model.yolo_layers[0]]['anchors']), log_file_path)
 
     elif len(weights) > 0:  # darknet format
         # possible weights are '*.weights', 'yolov3-tiny.conv.15',  'darknet53.conv.74' etc.
         load_darknet_weights(model, weights)
 
-        write_to_file(repr(opt), log_file_path, mode='w')
-        write_to_file('anchors:\n' +  repr(model.module_defs[model.yolo_layers[0]]['anchors']), log_file_path)
     # else:
     #     raise Exception("pretrained model's path can't be NULL!")
 
@@ -219,6 +208,7 @@ if __name__ == '__main__':
     #
     # optimizer = torch.optim.SGD(pg0, lr=lr0, momentum=momentum, nesterov=True)
     #
+    # clw note: 使用add_param_group(),可以实现比如不同层使用不同的lr和weight decay
     # optimizer.add_param_group({'params': pg1, 'weight_decay': weight_decay})  # add pg1 with weight_decay
     # optimizer.add_param_group({'params': pg2})  # add pg2 (biases)
     # del pg0, pg1, pg2
@@ -239,6 +229,8 @@ if __name__ == '__main__':
 
 
     ###### apex need ######
+    if device == 'cpu':
+        mixed_precision = False
     if mixed_precision:
         model, optimizer = amp.initialize(model, optimizer, opt_level='O1', verbosity=0)
     # Initialize distributed training

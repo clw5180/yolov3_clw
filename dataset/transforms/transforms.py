@@ -9,6 +9,7 @@ from utils.utils import write_to_file
 def build_transforms(img_size, is_train=False):
     if is_train:
         transform = Compose([
+            #AugmentHSV(),
             RandomHorizontalFlip(),
             RandomCrop(),
             RandomTranslate(),
@@ -204,6 +205,30 @@ class ImgProcess(object):
             image = image_paded / 255.0
             return (image, bboxes, ((h_org, w_org), ((resize_ratio,resize_ratio), (dw, dh))))
 
+
+
+class AugmentHSV(object):
+    def __init__(self, hgain=0.01, sgain=0.3, vgain=0.3, p=0.5):
+        print('using AugmentHSV !')
+        write_to_file('using AugmentHSV !', log_file_path)
+        self.p = p
+        self.hgain = hgain
+        self.sgain = sgain
+        self.vgain = vgain
+
+    def __call__(self, data):
+        if not isinstance(data, tuple):
+            pass
+        else:
+            if random.random() < self.p:
+                img, label = data[0], data[1]
+                x = np.random.uniform(-1, 1, 3) * [self.hgain, self.sgain, self.vgain] + 1  # random gains
+                img_hsv = (cv2.cvtColor(img, cv2.COLOR_BGR2HSV) * x).clip(None, 255).astype(np.uint8)
+                np.clip(img_hsv[:, :, 0], None, 179, out=img_hsv[:, :, 0])  # inplace hue clip (0 - 179 deg)
+                img = cv2.cvtColor(img_hsv, cv2.COLOR_HSV2BGR)  # no return needed
+                return (img, label)
+            else:
+                return data
 
 
 #############################################################
