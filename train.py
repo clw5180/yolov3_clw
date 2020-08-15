@@ -98,9 +98,11 @@ if __name__ == '__main__':
     #parser.add_argument('--img-size', type=int, default=1024, help='resize to this size square and detect')
     parser.add_argument('--img-size', type=int, default=416, help='resize to this size square and detect')
     parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--batch-size', type=int, default=64)  # effective bs = batch_size * accumulate = 16 * 4 = 64
+    #parser.add_argument('--batch-size', type=int, default=64)  # effective bs = batch_size * accumulate = 16 * 4 = 64
+    parser.add_argument('--batch-size', type=int, default=32)  # effective bs = batch_size * accumulate = 16 * 4 = 64
     #parser.add_argument('--batch-size', type=int, default=8)
     #parser.add_argument('--batch-size', type=int, default=4)
+    parser.add_argument('--multi-scale', action='store_true', help='rectangular training')
     opt = parser.parse_args()
 
     # 0、参数设置 ( 设置随机数种子，读取参数和配置文件信息 )
@@ -245,7 +247,7 @@ if __name__ == '__main__':
     ######
     model.nc = nc
 
-    multi_scale = False
+    multi_scale = opt.multi_scale
     if multi_scale:
         print('using multi_scale !')
         write_to_file('using multi_scale !', log_file_path)
@@ -318,8 +320,8 @@ if __name__ == '__main__':
             # Multi-Scale training
             if multi_scale:
                 if ni  % 1 == 0:  #  adjust (67% - 150%) every 1 or 10 batches
-                    #img_size = random.randrange(10, 19 + 1) * 32
-                    img_size = random.randrange(24, 32 + 1) * 32
+                    img_size = random.randrange(10, 19 + 1) * 32  # 320~608, 间隔32
+                    #img_size = random.randrange(24, 32 + 1) * 32
                 ##ns = [math.ceil(x * sf / 32.) * 32 for x in imgs.shape[2:]]  # new shape (stretched to 32-multiple)
                 img_tensor = F.interpolate(img_tensor, size=(img_size, img_size), mode='bilinear', align_corners=False)
 

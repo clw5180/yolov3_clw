@@ -149,7 +149,7 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
     FloatTensor = torch.cuda.FloatTensor if targets.is_cuda else torch.FloatTensor
 
     nc = model.nc
-    nt = len(targets)
+    nt = len(targets)  # 有gt，才能往后计算gt和iou匹配的过程，选出进入compute loss的gt
 
     tcls_all = []
     tx_all, ty_all, th_all, tw_all = [], [], [], []
@@ -158,7 +158,6 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
     mixup_ratios_all = []
 
     multi_gpu = type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
-    use_all_anchors = True
 
     for i in model.yolo_layers:  # clw note: 一层一层来
 
@@ -189,86 +188,78 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
         if nt:
             #iou = torch.stack([wh_iou(x, gwh) for x in anchor_vec], 0)
             iou = torch.stack([bboxes_anchor_iou(gxywh, anchor, x1y1x2y2=False) for anchor in anchor_vec], 0)  # clw modify: wh_iou is not accurate enough
-            if use_all_anchors:
-                iou_mask = (iou > 0.3)
-                target_mask = iou_mask.sum(0) > 0
-                targets_need = targets[target_mask]
-                ###### clw modify
-                gts = []  # list, len: bs
-                pre_batch_idx = 0
-                gt_box = []
-                for batch_idx, target in enumerate(targets_need):
-                    if targets_need[batch_idx][0] == pre_batch_idx:  # 相同batch_idx，直接进box_list
-                        gt_box.append(target[2:])
-                    else:  # 不同batch_idx，
-                        if targets_need[batch_idx][0] - pre_batch_idx == 1: # 相差1
+            iou_mask = (iou > 0.3)
+            targets_need = targets[ iou_mask.sum(0) > 0 ]
+            ###### clw modify
+            gts = []  # list, len: bs
+            pre_batch_idx = 0
+            gt_box = []
+            for batch_idx, target in enumerate(targets_need):
+                if targets_need[batch_idx][0] == pre_batch_idx:  # 相同batch_idx，直接进box_list
+                    gt_box.append(target[2:])
+                else:  # 不同batch_idx，
+                    if targets_need[batch_idx][0] - pre_batch_idx >= 1:  # 分两种情况：（1）相差等于1，很正常 （2）大于1，说明某个batch没有iou匹配的gt，
+                                                                         #                   此时就要把空缺的batch补上[]，这样确保维度始终是batchsize
+                        pre_batch_idx += 1
+                        gts.append(gt_box) # 先将之前的box_list进总的list
+                        gt_box = []  # 同时box_list清零，
+                        gt_box.append(target[2:])  # 然后当前这个box进box_list
+                        while(targets_need[batch_idx][0] - pre_batch_idx > 0): # 如果相差大于0，也就是上面的情况（2），那么重复操作以下两步；相当于比如batch_idx=3的时候，一定要把batch_idx为0,1,2的所有gt都处理完
+                            gts.append([])  # 加一个空的box_list到总的list
                             pre_batch_idx += 1
-                            gts.append(gt_box) # 先将之前的box_list进总的list
-                            gt_box = []  # 同时box_list清零，
-                            gt_box.append(target[2:])  # 然后这个box进box_list
-                        elif targets_need[batch_idx][0] - pre_batch_idx > 1:  # 相差大于1
-                            gts.append(gt_box)  # 先将之前的box_list进总的list
-                            gts.append([])   # 然后加一个空的box_list到总的list
-                            pre_batch_idx += 1
-                            gt_box = []  # 同时box_list清零
-                            gt_box.append(target[2:])  # 然后这个box进box_list
-                            while(targets_need[batch_idx][0] - pre_batch_idx >= 1):  # 如果依然相差大于1，那么重复操作以下两步
-                                if targets_need[batch_idx][0] - pre_batch_idx > 1:
-                                    pre_batch_idx += 1
-                                    gts.append([])
-                                else:
-                                    pre_batch_idx += 1
-                            continue
-                        else:  # 相差小于1，有bug
-                            raise Exception('Error: targets_need[batch_idx][0] - pre_batch_idx < 1 never occur! maybe have some bug')
-                gts.append(gt_box)  # final batch; and gts looks like list[0]: [tensor1, tensor2....]  list[1]: [tensor1]
-                for i in range(bs - 1 - int(target[0])):  # clw note: 比如bs=64, 但是batch_idx=60以后都没有匹配的target，那么这里要加上相应数量的[]
+                        continue  # 相差等于0，回到循环开始，继续往下找
+                    else:  # 相差小于0，说明不是targets_need不是按照第一个维度也就是batch_idx顺序排列的，因此有bug
+                        raise Exception('Error: targets_need[batch_idx][0] - pre_batch_idx < 1 never occur! maybe have some bug')
+            gts.append(gt_box)  # 把最后留下的同一batch_idx的gt加进去; gts looks like:  list[0]: [tensor, tensor....]  list[1]: [tensor], ... , list[63]: [tensor, ...]
+
+            if targets_need.numel():  # 非空，有具体的元素存在，而不是[]这种元素
+                for i in range(bs - 1 - int(target[0])):  # clw note: 比如bs=64, 但是batch_idx=60以后都没有匹配的target，那么这里要append 3个[]
                     gts.append([])
-                ###### clw note: can debug there
-
-                # print(len(gt_all))
-                gt_max_len = -1
-                for batch_idx in range(len(gts)):
-                    # print(i, len(gt_all[i]))
-                    if len(gts[batch_idx]) > gt_max_len:
-                        gt_max_len = len(gts[batch_idx])
-                gt_all = torch.cuda.FloatTensor(len(gts), gt_max_len ,5).fill_(0)   # 5 -> (x, y, w, h, mixup_ratio)
-
-                for batch_idx in range(len(gts)):
-                    for target_idx in range(len(gts[batch_idx])):
-                        #print(batch_idx, target_idx)
-                        gt_all[batch_idx, target_idx] = gts[batch_idx][target_idx]
-
-                ###### clw note: can debug
-                target_all.append(gt_all)  # gt_all: tensor(bs, n, 4), n is max gt num in batchsize images, such as 150 in Peterisfer
-                ######
-
-                na = len(anchor_vec)  # number of anchors
-                a = torch.arange(na).view((-1, 1)).repeat([1, nt]).view(-1)  # anchor_idx, represent which anchor in this yolo_layer, 0, 1 or 2
-                targets_cur = targets_cur.repeat([na, 1])
-                gxy = gxy.repeat([na, 1])
-                gwh = gwh.repeat([na, 1])
-                gmixup_ratios = gmixup_ratios.repeat(na)
-
-                ###### clw modify
-                # if pytorch_version_minor <= 1:  # pytorch 1.1 or less
-                #     iou_mask1 = torch.zeros(iou.size()).byte().cuda()
-                # else:
-                #     iou_mask1 = torch.zeros(iou.size()).bool().cuda()
-                # _, idx = iou.max(0)
-                # for i in range(len(idx)):  # clw note: for loop's efficiency is low  TODO
-                #     iou_mask1[idx[i], i] = 1  #        torch.sum(): 201
-                # iou_mask2 = (iou > 0.3)  # (3, 201)  torch.sum(): 305
-                # iou_mask = iou_mask1 | iou_mask2  # torch.sum(): 330
-                ######
+            else:   # 否则 target可能还是上一个layer遗留下来的东西，而不是targets_need的元素！！ 因为targets_need是空的....
+                for i in range(bs - 1): # 因此就要加上bs-1个空的列表
+                    gts.append([])
 
 
-                iou_mask = iou_mask.view(-1)
-                targets_cur, a, gxy, gwh, gmixup_ratios = targets_cur[iou_mask], a[iou_mask], gxy[iou_mask], gwh[iou_mask], gmixup_ratios[iou_mask]
+            # 遍历64个batch，找到一个batch含有的gt数量最多是多少，将该值写入gt_max_len
+            # print('clw: len(gts) =', len(gts))  # for debug; if not equal to the batchsize(except last batch in epoch), or the 3 layer values are different, it means bug !!
+            gt_max_len = -1
+            for batch_idx in range(len(gts)):
+                if len(gts[batch_idx]) > gt_max_len:
+                    gt_max_len = len(gts[batch_idx])
+            gt_all = torch.cuda.FloatTensor(len(gts), gt_max_len ,5).fill_(0)   # 5 -> (x, y, w, h, mixup_ratio)
+
+            for batch_idx in range(len(gts)):
+                for target_idx in range(len(gts[batch_idx])):
+                    #print(batch_idx, target_idx)
+                    gt_all[batch_idx, target_idx] = gts[batch_idx][target_idx]
+
+            ###### clw note: can debug
+            target_all.append(gt_all)  # gt_all: tensor(bs, n, 4), n is max gt num in batchsize images, such as 150 in Peterisfer
+            ######
+
+            na = len(anchor_vec)  # number of anchors
+            a = torch.arange(na).view((-1, 1)).repeat([1, nt]).view(-1)  # anchor_idx, represent which anchor in this yolo_layer, 0, 1 or 2
+            targets_cur = targets_cur.repeat([na, 1])
+            gxy = gxy.repeat([na, 1])
+            gwh = gwh.repeat([na, 1])
+            gmixup_ratios = gmixup_ratios.repeat(na)
+
+            ###### clw modify
+            # if pytorch_version_minor <= 1:  # pytorch 1.1 or less
+            #     iou_mask1 = torch.zeros(iou.size()).byte().cuda()
+            # else:
+            #     iou_mask1 = torch.zeros(iou.size()).bool().cuda()
+            # _, idx = iou.max(0)
+            # for i in range(len(idx)):  # clw note: for loop's efficiency is low  TODO
+            #     iou_mask1[idx[i], i] = 1  #        torch.sum(): 201
+            # iou_mask2 = (iou > 0.3)  # (3, 201)  torch.sum(): 305
+            # iou_mask = iou_mask1 | iou_mask2  # torch.sum(): 330
+            ######
 
 
-            else:  # use best anchor only
-                _, a = iou.max(0)  # best iou and anchor,  for example: nt=201, a:(201,), iou:(201,)
+            iou_mask = iou_mask.view(-1)
+            targets_cur, a, gxy, gwh, gmixup_ratios = targets_cur[iou_mask], a[iou_mask], gxy[iou_mask], gwh[iou_mask], gmixup_ratios[iou_mask]
+
 
         # Indices
         batch_idx, class_id = targets_cur[:, :2].long().t()  # target image, class
@@ -299,9 +290,9 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
         noobj_mask[batch_idx, a, gj, gi] = 0
 
         # Set noobj mask to zero where iou exceeds ignore threshold
-        if not use_all_anchors:  # use best anchor, such as paper did
-            for i, iou_ in enumerate(iou.t()):  # iou.t(): (201, 3)    iou_: (3,)
-                noobj_mask[batch_idx[i], iou_ > 0.5, gj[i], gi[i]] = 0    # 0.5 is ignore_thres, such as paper said
+        # if not use_all_anchors:  # use best anchor, such as paper did
+        #     for i, iou_ in enumerate(iou.t()):  # iou.t(): (201, 3)    iou_: (3,)
+        #         noobj_mask[batch_idx[i], iou_ > 0.5, gj[i], gi[i]] = 0    # 0.5 is ignore_thres, such as paper said
 
 
         obj_mask_all.append(obj_mask)
@@ -339,8 +330,10 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
                                              # p_box: 一个list包含3个tensor，维度(bs,3,13,13,4), (bs,3,26,26,4)....   targets: (n, 6)
     lcls, lbox, lobj = torch.cuda.FloatTensor([0]), torch.cuda.FloatTensor([0]), torch.cuda.FloatTensor([0])  #ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor  # clw note: 暂时不支持cpu，太慢
     bs = p[0].size(0)  # clw note: batchsize
+    #print('clw: p_bs =', bs)
 
     obj_mask_all, noobj_mask_all, tx_all, ty_all, tw_all, th_all, tcls_all, target_all, mixup_ratios_all = build_targets(model, bs, targets)
+    #print('clw: gt_bs =', target_all[0].size(0))
 
     # Define criteria
     #loss_reduction_type = 'sum'  # Loss reduction (sum or mean)  # reduction：控制损失输出模式。设为"sum"表示对样本进行求损失和；设为"mean"表示对样本进行求损失的平均值；而设为"none"表示对样本逐个求损失，输出与输入的shape一样。
@@ -360,106 +353,109 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
             obj_mask = obj_mask_all[i].bool()   # clw note: for pytorch 1.4, have UserWarning: indexing with dtype torch.uint8 is now deprecated, please use a dtype torch.bool instead
             noobj_mask = noobj_mask_all[i].bool()
 
-        ###### clw note: borrowed from Peter's version,
-        gt_boxes = target_all[i][:, :, :4] * img_size   # (64, n, 4)   n is 150 in Peter's yolov3, there is the most gt num in a batch, such as 16
-        p_boxes = p_box[i]   # (64, 3, 13, 13, 4)
-        p_boxes = p_boxes.float()
-        p_tmp = p_boxes.unsqueeze(4)  # (64, 3, 13, 13, 1, 4)
-        gt_tmp = gt_boxes.unsqueeze(1).unsqueeze(1).unsqueeze(1)  # (64, 1, 1, 1, n, 4)
-        iou = iou_xywh_torch(p_tmp, gt_tmp)  # (64, 3, 13, 13, n)
-        iou_max = iou.max(-1)[0]  # clw modify:  (64, 3, 13, 13, n) ->  (64, 3, 13, 13)，即对每一个pred和n个gt比较，如果iou都小于0.5，则该pred对应位置才会计入noobj，否则不计入
-        #aaa = noobj_mask.sum()  # 32, 3, 13, 13 -> sum: 16153
-        noobj_mask = noobj_mask * (iou_max < 0.5)  # noobj_mask: (64, 3, 13, 13)
-        #bbb = noobj_mask.sum()  # 32, 3, 13, 13 -> sum: 15868
-        ######
 
-        tx = tx_all[i][obj_mask]  # 需要把gt所在的那个grid cell的预测结果拿出来
-        ty = ty_all[i][obj_mask]
-        tw = tw_all[i][obj_mask]
-        th = th_all[i][obj_mask]
-        tcls = tcls_all[i][obj_mask]
-        max_ratio = mixup_ratios_all[i][obj_mask]
+        if target_all[i].size(1) != 0:  # 如果沒和anchor匹配的gt一个都没有，比如那一层都是巨大的anchor，如(373,326)这种......就只计算obj损失就可以了
+            ###### clw note: borrowed from Peter's version,
+            gt_boxes = target_all[i][:, :, :4] * img_size   # (64, n, 4)   n is 150 in Peter's yolov3, there is the most gt num in a batch, such as 16
+            p_boxes = p_box[i]   # (64, 3, 13, 13, 4)
+            p_boxes = p_boxes.float()
+            p_tmp = p_boxes.unsqueeze(4)  # (64, 3, 13, 13, 1, 4)
+            gt_tmp = gt_boxes.unsqueeze(1).unsqueeze(1).unsqueeze(1)  # (64, 1, 1, 1, n, 4)
+            iou = iou_xywh_torch(p_tmp, gt_tmp)  # (64, 3, 13, 13, n)
+            iou_max = iou.max(-1)[0]  # clw modify:  (64, 3, 13, 13, n) ->  (64, 3, 13, 13)，即对每一个pred和n个gt比较，如果iou都小于0.5，则该pred对应位置才会计入noobj，否则不计入
+            #aaa = noobj_mask.sum()  # 32, 3, 13, 13 -> sum: 16153
+            noobj_mask = noobj_mask * (iou_max < 0.5)  # noobj_mask: (64, 3, 13, 13)
+            #bbb = noobj_mask.sum()  # 32, 3, 13, 13 -> sum: 15868
+            ######
 
-        # Compute losses
-        # clw note: 如果有 gt，也就是不是纯负样本的图，那么需要计算 （1）位置损失  （2）分类损失
-        px = torch.sigmoid(pi[obj_mask][:, 0])  # clw note：用于计算损失的是σ(tx),σ(ty),和 tw 和 th (因为gt映射到tx^时，sigmoid反函数不好求，所以不用tx和ty)
-        py = torch.sigmoid(pi[obj_mask][:, 1])
-        pw = pi[obj_mask][:, 2]
-        ph = pi[obj_mask][:, 3]
+            tx = tx_all[i][obj_mask]  # 需要把gt所在的那个grid cell的预测结果拿出来
+            ty = ty_all[i][obj_mask]
+            tw = tw_all[i][obj_mask]
+            th = th_all[i][obj_mask]
+            tcls = tcls_all[i][obj_mask]
+            max_ratio = mixup_ratios_all[i][obj_mask]
 
-        # reduce = 'sum'
-        # loss_x = MSEcoord(px, tx)  # clw note: tx is 'tx_hat', and px is tx in paper
-        # loss_y = MSEcoord(py, ty)
-        # loss_w = MSEcoord(pw, tw)
-        # loss_h = MSEcoord(ph, th)
+            # Compute losses
+            # clw note: 如果有 gt，也就是不是纯负样本的图，那么需要计算 （1）位置损失  （2）分类损失
+            px = torch.sigmoid(pi[obj_mask][:, 0])  # clw note：用于计算损失的是σ(tx),σ(ty),和 tw 和 th (因为gt映射到tx^时，sigmoid反函数不好求，所以不用tx和ty)
+            py = torch.sigmoid(pi[obj_mask][:, 1])
+            pw = pi[obj_mask][:, 2]
+            ph = pi[obj_mask][:, 3]
 
-        # reduce = 'none'
-        # obj_nums = len(tx)
-        loss_x = torch.matmul(MSEcoord(px, tx), max_ratio) # / obj_nums
-        loss_y = torch.matmul(MSEcoord(py, ty), max_ratio) # / obj_nums
-        loss_w = torch.matmul(MSEcoord(pw, tw), max_ratio) # / obj_nums
-        loss_h = torch.matmul(MSEcoord(ph, th), max_ratio) # / obj_nums
-        lbox += (loss_x + loss_y + loss_w + loss_h)
+            # reduce = 'sum'
+            # loss_x = MSEcoord(px, tx)  # clw note: tx is 'tx_hat', and px is tx in paper
+            # loss_y = MSEcoord(py, ty)
+            # loss_w = MSEcoord(pw, tw)
+            # loss_h = MSEcoord(ph, th)
 
-        # 2、计算分类损失，这里只针对多类别，如果只有1个类那么只需要计算 obj 损失
-        ### (1) normal BCE
-        # if model.nc > 1:  # cls loss (only if multiple classes)
-        #     lcls += BCEcls(pi[obj_mask][:, 5:], tcls)
+            # reduce = 'none'
+            # obj_nums = len(tx)
+            loss_x = torch.matmul(MSEcoord(px, tx), max_ratio) # / obj_nums
+            loss_y = torch.matmul(MSEcoord(py, ty), max_ratio) # / obj_nums
+            loss_w = torch.matmul(MSEcoord(pw, tw), max_ratio) # / obj_nums
+            loss_h = torch.matmul(MSEcoord(ph, th), max_ratio) # / obj_nums
+            lbox += (loss_x + loss_y + loss_w + loss_h)
 
-        ### (2) CE + label_smooth 0.1 -> mAP  0.689  P  0.178
-        ###                       0.01 -> mAP 0.688 P  0.157 结论：（1）labelsmooth有提升：综合后几轮来看mAP更高更稳定，且P明显更高
-        ###                                                       （2）CELoss和BCELoss相比，准确率P差的非常多，大概两倍多；
-        ###     注意如果使用CE，在model.py中改为torch.sigmoid_(io[..., 4])
-        # logsoftmax = nn.LogSoftmax(dim=1)
-        # LabelSmooth = LabelSmoothing()
-        # lcls_ = LabelSmooth( logsoftmax(pi[obj_mask][:, 5:]) , tcls.argmax(1) ).view(-1)
-        # a = max_ratio.reshape(-1, 1)
-        # b = a.repeat(1, model.nc)
-        # c = b.reshape(-1)
-        # lcls += torch.matmul(lcls_, c) #  / obj_nums
-        # ####
+            # 2、计算分类损失，这里只针对多类别，如果只有1个类那么只需要计算 obj 损失
+            ### (1) normal BCE
+            # if model.nc > 1:  # cls loss (only if multiple classes)
+            #     lcls += BCEcls(pi[obj_mask][:, 5:], tcls)
 
-        # (3) BCE + wrong mixup_ratio -> mAP 0.696
-        # aaa = BCEcls(pi[obj_mask][:, 5:], tcls).view(-1)
-        # bbb = max_ratio.repeat(20)
-        # lcls += torch.matmul(aaa, bbb) #  / obj_nums
+            ### (2) CE + label_smooth 0.1 -> mAP  0.689  P  0.178
+            ###                       0.01 -> mAP 0.688 P  0.157 结论：（1）labelsmooth有提升：综合后几轮来看mAP更高更稳定，且P明显更高
+            ###                                                       （2）CELoss和BCELoss相比，准确率P差的非常多，大概两倍多；
+            ###     注意如果使用CE，在model.py中改为torch.sigmoid_(io[..., 4])
+            # logsoftmax = nn.LogSoftmax(dim=1)
+            # LabelSmooth = LabelSmoothing()
+            # lcls_ = LabelSmooth( logsoftmax(pi[obj_mask][:, 5:]) , tcls.argmax(1) ).view(-1)
+            # a = max_ratio.reshape(-1, 1)
+            # b = a.repeat(1, model.nc)
+            # c = b.reshape(-1)
+            # lcls += torch.matmul(lcls_, c) #  / obj_nums
+            # ####
 
-        # (3.5) BCE + right mixup_ratio -> mAP 0.703，P=0.357
-        # aaa = BCEcls(pi[obj_mask][:, 5:], tcls).view(-1)
-        # a = max_ratio.reshape(-1, 1)
-        # b = a.repeat(1, model.nc)
-        # bbb = b.reshape(-1)
-        # lcls += torch.matmul(aaa, bbb) #  / obj_nums
+            # (3) BCE + wrong mixup_ratio -> mAP 0.696
+            # aaa = BCEcls(pi[obj_mask][:, 5:], tcls).view(-1)
+            # bbb = max_ratio.repeat(20)
+            # lcls += torch.matmul(aaa, bbb) #  / obj_nums
 
-        # (3.99) BCE + right mixup_ratio + LabelSmooth -> mAP ？
-        # ？？？？？？？？？？？？结论：（1）labelsmooth有提升：综合后几轮来看mAP更高更稳定，且P明显更高一点，大概0.02～0.03；加入label_smooth 更不容易发生负样本误识别
-        # 说明：上面的LabelSmooth类其实相当于CELoss做平滑，而不是BCELoss；这里手动把BCE的标签改一下；
-        # label_smooth
-        smoothing_factor = 0.05
-        indexes = tcls.argmax(1)
-        for i, index in enumerate(indexes):
-            tcls[i, index] = 1 - smoothing_factor -  smoothing_factor / (model.nc - 1)   # tcls: [0,0,0,....,0,1,0,0]
-        tcls[:, :] += smoothing_factor / (model.nc - 1)  # 额外减去smoothing_factor / (model.nc - 1)，再统一加上
-        # BCELoss
-        aaa = BCEcls(pi[obj_mask][:, 5:], tcls).view(-1)
-        a = max_ratio.reshape(-1, 1)
-        b = a.repeat(1, model.nc)
-        bbb = b.reshape(-1)
-        lcls += torch.matmul(aaa, bbb) #  / obj_nums
+            # (3.5) BCE + right mixup_ratio -> mAP 0.7，P=0.33
+            aaa = BCEcls(pi[obj_mask][:, 5:], tcls).view(-1)
+            a = max_ratio.reshape(-1, 1)
+            b = a.repeat(1, model.nc)
+            bbb = b.reshape(-1)
+            lcls += torch.matmul(aaa, bbb) #  / obj_nums
 
-        # (4) CE with sigmoid  -> mAP 0.66  #  tcls是一个list，含有3个tensor，每个torch.size是308，形如 [2 1 14 14 14 6...]
-        # lcls_ =  CEcls(pi[obj_mask][:, 5:], tcls.argmax(1))
-        # lcls += torch.matmul(lcls_, max_ratio)
+            # (3.99) BCE + right mixup_ratio + LabelSmooth factor 0.05 -> mAP 0.692  P=0.36
+            # 结论：（1）BCE不适合加入labelsmooth，mAP低了0.01，并且P基本没有提升；
+            # label_smooth
+            # smoothing_factor = 0
+            # indexes = tcls.argmax(1)
+            # for i, index in enumerate(indexes):
+            #     tcls[i, index] = 1 - smoothing_factor -  smoothing_factor / (model.nc - 1)   # tcls: [0,0,0,....,0,1,0,0]
+            # tcls[:, :] += smoothing_factor / (model.nc - 1)  # 额外减去smoothing_factor / (model.nc - 1)，再统一加上
+            # # BCELoss
+            # aaa = BCEcls(pi[obj_mask][:, 5:], tcls).view(-1)
+            # a = max_ratio.reshape(-1, 1)
+            # b = a.repeat(1, model.nc)
+            # bbb = b.reshape(-1)
+            # lcls += torch.matmul(aaa, bbb) #  / obj_nums
 
-        # (4.5) CE without sigmoid，将models.py里面的torch.sigmoid_(io[..., 4:])改为torch.sigmoid_(io[..., 4])  -> mAP 0.681
-        # lcls_ =  CEcls(pi[obj_mask][:, 5:], tcls.argmax(1))
-        # lcls += torch.matmul(lcls_, max_ratio)
+            # (4) CE with sigmoid  -> mAP 0.66  #  tcls是一个list，含有3个tensor，每个torch.size是308，形如 [2 1 14 14 14 6...]
+            # lcls_ =  CEcls(pi[obj_mask][:, 5:], tcls.argmax(1))
+            # lcls += torch.matmul(lcls_, max_ratio)
 
+            # (4.5) CE without sigmoid，将models.py里面的torch.sigmoid_(io[..., 4:])改为torch.sigmoid_(io[..., 4])  -> mAP 0.681
+            # lcls_ =  CEcls(pi[obj_mask][:, 5:], tcls.argmax(1))
+            # lcls += torch.matmul(lcls_, max_ratio)
 
         # 3、计算 obj 损失
         tconf = obj_mask.float()
-        #loss_obj = BCEobj(pi[obj_mask][..., 4], tconf[obj_mask])
-        loss_obj = torch.matmul(BCEobj(pi[obj_mask][..., 4], tconf[obj_mask]), max_ratio)  # / obj_nums
+        loss_obj = BCEobj(pi[obj_mask][..., 4], tconf[obj_mask])
+        if loss_obj.numel():  # 有anchor iou匹配的gt
+            loss_obj = torch.matmul(BCEobj(pi[obj_mask][..., 4], tconf[obj_mask]), max_ratio)  # / obj_nums
+        else:
+            loss_obj = 0
         loss_noobj = BCEobj(pi[noobj_mask][..., 4],  tconf[noobj_mask]).sum()   #  / obj_nums
         loss_obj_all = loss_obj + loss_noobj
         lobj += loss_obj_all
@@ -784,10 +780,8 @@ def iou_xywh_torch(boxes1, boxes2):  # borrowed from Peter, xctr, yctr, w, h
 
     # 分别计算出boxes1和boxes2的左上角坐标、右下角坐标
     # 存储结构为(xmin, ymin, xmax, ymax)，其中(xmin,ymin)是bbox的左上角坐标，(xmax,ymax)是bbox的右下角坐标
-    boxes1 = torch.cat([boxes1[..., :2] - boxes1[..., 2:] * 0.5,
-                        boxes1[..., :2] + boxes1[..., 2:] * 0.5], dim=-1)
-    boxes2 = torch.cat([boxes2[..., :2] - boxes2[..., 2:] * 0.5,
-                        boxes2[..., :2] + boxes2[..., 2:] * 0.5], dim=-1)
+    boxes1 = torch.cat([boxes1[..., :2] - boxes1[..., 2:] * 0.5, boxes1[..., :2] + boxes1[..., 2:] * 0.5], dim=-1)
+    boxes2 = torch.cat([boxes2[..., :2] - boxes2[..., 2:] * 0.5, boxes2[..., :2] + boxes2[..., 2:] * 0.5], dim=-1)
 
     # 计算出boxes1与boxes1相交部分的左上角坐标、右下角坐标
     left_up = torch.max(boxes1[..., :2], boxes2[..., :2])
