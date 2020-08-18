@@ -338,11 +338,14 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
     # Define criteria
     #loss_reduction_type = 'sum'  # Loss reduction (sum or mean)  # reduction：控制损失输出模式。设为"sum"表示对样本进行求损失和；设为"mean"表示对样本进行求损失的平均值；而设为"none"表示对样本逐个求损失，输出与输入的shape一样。
     loss_reduction_type = 'none'
-    BCEcls = nn.BCEWithLogitsLoss(reduction=loss_reduction_type)  # withLogits的含义：输入也就是pred还会经过sigmoid, 然后再和label算二元交叉熵损失  loss = - [ ylog y^ + (1-y)log(1-y^) ]  其中y^是yolo_layer层输出的结果 tcls 经过 sigmoid 函数得到的，将输出结果转换到0~1之间，即该目标属于不同类别的概率值
-    #LabelSmooth = LabelSmoothing(reduction=loss_reduction_type)  # withLogits的含义：输入也就是pred还会经过sigmoid, 然后再和label算二元交叉熵损失  loss = - [ ylog y^ + (1-y)log(1-y^) ]  其中y^是yolo_layer层输出的结果 tcls 经过 sigmoid 函数得到的，将输出结果转换到0~1之间，即该目标属于不同类别的概率值
+    #LabelSmooth = LabelSmoothing(reduction=loss_reduction_type)
     CEcls = nn.CrossEntropyLoss(reduction=loss_reduction_type)
-    BCEobj = nn.BCEWithLogitsLoss(reduction=loss_reduction_type)  # 可选参数 weight=model.class_weights   TODO: 不同类别的损失，设置不同的权重，个人感觉有点类似 focal loss
-    MSEcoord = nn.MSELoss(reduction=loss_reduction_type)
+    BCELossWithSigmoid = nn.BCEWithLogitsLoss(reduction=loss_reduction_type)  # withLogits的含义：输入也就是pred还会经过sigmoid, 然后再和label算二元交叉熵损失  loss = - [ ylog y^ + (1-y)log(1-y^) ]
+                                                                   # 其中y^是yolo_layer层输出的结果 tcls 经过 sigmoid 函数得到的，将输出结果转换到0~1之间，即该目标属于不同类别的概率值
+                                                                   # 可选参数 weight=model.class_weights   TODO: 不同类别的损失，设置不同的权重，个人感觉有点类似 focal loss
+    BCELoss = nn.BCELoss(reduction=loss_reduction_type)
+    MSELoss = nn.MSELoss(reduction=loss_reduction_type)
+    SmoothL1Loss = nn.SmoothL1Loss(reduction=loss_reduction_type)
 
     # Compute losses
     for i, pi in enumerate(p):  # layer index: 0,1,2   layer predictions: (bs,3,13,13,25), (bs,3,26,26,25), (bs,3,52,52,25)
@@ -373,33 +376,59 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
             tw = tw_all[i][obj_mask]
             th = th_all[i][obj_mask]
             tcls = tcls_all[i][obj_mask]
-            max_ratio = mixup_ratios_all[i][obj_mask]
+            mixup_ratio = mixup_ratios_all[i][obj_mask]
 
             # Compute losses
             # clw note: 如果有 gt，也就是不是纯负样本的图，那么需要计算 （1）位置损失  （2）分类损失
-            px = torch.sigmoid(pi[obj_mask][:, 0])  # clw note：用于计算损失的是σ(tx),σ(ty),和 tw 和 th (因为gt映射到tx^时，sigmoid反函数不好求，所以不用tx和ty)
-            py = torch.sigmoid(pi[obj_mask][:, 1])
+            # px = torch.sigmoid(pi[obj_mask][:, 0])  # clw note：用于计算损失的是σ(tx),σ(ty),和 tw 和 th (因为gt映射到tx^时，sigmoid反函数不好求，所以不用tx和ty)
+            # py = torch.sigmoid(pi[obj_mask][:, 1])
+            # pw = pi[obj_mask][:, 2]
+            # ph = pi[obj_mask][:, 3]
+            # reduce = 'none', and then matmul with mixup_ratio; else reduce = 'sum'
+            # loss_x = torch.matmul(MSELoss(px, tx), mixup_ratio) # / obj_nums  # obj_nums = len(tx)
+            # loss_y = torch.matmul(MSELoss(py, ty), mixup_ratio) # / obj_nums
+            # loss_w = torch.matmul(MSELoss(pw, tw), mixup_ratio) # / obj_nums
+            # loss_h = torch.matmul(MSELoss(ph, th), mixup_ratio) # / obj_nums
+
+            #### xy改为BCE，wh改为Smooth L1，  ==> mAP 0.694, ↓ ~0.007
+            # px = pi[obj_mask][:, 0]
+            # py = pi[obj_mask][:, 1]
+            # pw = pi[obj_mask][:, 2]
+            # ph = pi[obj_mask][:, 3]
+            # loss_x = torch.matmul(BCELossWithSigmoid(px, tx), mixup_ratio) # / obj_nums  # obj_nums = len(tx)
+            # loss_y = torch.matmul(BCELossWithSigmoid(py, ty), mixup_ratio) # / obj_nums
+            # loss_w = torch.matmul(SmoothL1Loss(pw, tw), mixup_ratio) # / obj_nums
+            # loss_h = torch.matmul(SmoothL1Loss(ph, th), mixup_ratio) # / obj_nums
+            ####
+
+            #### xy改为BCE  ==> mAP 0.701, P 0.338 P更高
+            px = pi[obj_mask][:, 0]
+            py = pi[obj_mask][:, 1]
             pw = pi[obj_mask][:, 2]
             ph = pi[obj_mask][:, 3]
+            loss_x = torch.matmul(BCELossWithSigmoid(px, tx), mixup_ratio) # / obj_nums  # obj_nums = len(tx)
+            loss_y = torch.matmul(BCELossWithSigmoid(py, ty), mixup_ratio) # / obj_nums
+            loss_w = torch.matmul(MSELoss(pw, tw), mixup_ratio) # / obj_nums
+            loss_h = torch.matmul(MSELoss(ph, th), mixup_ratio) # / obj_nums
+            ####
 
-            # reduce = 'sum'
-            # loss_x = MSEcoord(px, tx)  # clw note: tx is 'tx_hat', and px is tx in paper
-            # loss_y = MSEcoord(py, ty)
-            # loss_w = MSEcoord(pw, tw)
-            # loss_h = MSEcoord(ph, th)
+            #### wh改为Smooth L1 ==> mAP 0.694
+            # px = torch.sigmoid(pi[obj_mask][:, 0])
+            # py = torch.sigmoid(pi[obj_mask][:, 1])
+            # pw = pi[obj_mask][:, 2]
+            # ph = pi[obj_mask][:, 3]
+            # loss_x = torch.matmul(MSELoss(px, tx), mixup_ratio) # / obj_nums  # obj_nums = len(tx)
+            # loss_y = torch.matmul(MSELoss(py, ty), mixup_ratio) # / obj_nums
+            # loss_w = torch.matmul(SmoothL1Loss(pw, tw), mixup_ratio) # / obj_nums
+            # loss_h = torch.matmul(SmoothL1Loss(ph, th), mixup_ratio) # / obj_nums
+            ####
 
-            # reduce = 'none'
-            # obj_nums = len(tx)
-            loss_x = torch.matmul(MSEcoord(px, tx), max_ratio) # / obj_nums
-            loss_y = torch.matmul(MSEcoord(py, ty), max_ratio) # / obj_nums
-            loss_w = torch.matmul(MSEcoord(pw, tw), max_ratio) # / obj_nums
-            loss_h = torch.matmul(MSEcoord(ph, th), max_ratio) # / obj_nums
-            lbox += (loss_x + loss_y + loss_w + loss_h)
+            lbox += 2.5 * (loss_x + loss_y + loss_w + loss_h)
 
             # 2、计算分类损失，这里只针对多类别，如果只有1个类那么只需要计算 obj 损失
             ### (1) normal BCE
             # if model.nc > 1:  # cls loss (only if multiple classes)
-            #     lcls += BCEcls(pi[obj_mask][:, 5:], tcls)
+            #     lcls += BCELossWithSigmoid(pi[obj_mask][:, 5:], tcls)
 
             ### (2) CE + label_smooth 0.1 -> mAP  0.689  P  0.178
             ###                       0.01 -> mAP 0.688 P  0.157 结论：（1）labelsmooth有提升：综合后几轮来看mAP更高更稳定，且P明显更高
@@ -408,20 +437,20 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
             # logsoftmax = nn.LogSoftmax(dim=1)
             # LabelSmooth = LabelSmoothing()
             # lcls_ = LabelSmooth( logsoftmax(pi[obj_mask][:, 5:]) , tcls.argmax(1) ).view(-1)
-            # a = max_ratio.reshape(-1, 1)
+            # a = mixup_ratio.reshape(-1, 1)
             # b = a.repeat(1, model.nc)
             # c = b.reshape(-1)
             # lcls += torch.matmul(lcls_, c) #  / obj_nums
             # ####
 
             # (3) BCE + wrong mixup_ratio -> mAP 0.696
-            # aaa = BCEcls(pi[obj_mask][:, 5:], tcls).view(-1)
-            # bbb = max_ratio.repeat(20)
+            # aaa = BCELossWithSigmoid(pi[obj_mask][:, 5:], tcls).view(-1)
+            # bbb = mixup_ratio.repeat(20)
             # lcls += torch.matmul(aaa, bbb) #  / obj_nums
 
             # (3.5) BCE + right mixup_ratio -> mAP 0.7，P=0.33
-            aaa = BCEcls(pi[obj_mask][:, 5:], tcls).view(-1)
-            a = max_ratio.reshape(-1, 1)
+            aaa = BCELossWithSigmoid(pi[obj_mask][:, 5:], tcls).view(-1)
+            a = mixup_ratio.reshape(-1, 1)
             b = a.repeat(1, model.nc)
             bbb = b.reshape(-1)
             lcls += torch.matmul(aaa, bbb) #  / obj_nums
@@ -434,30 +463,32 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
             # for i, index in enumerate(indexes):
             #     tcls[i, index] = 1 - smoothing_factor -  smoothing_factor / (model.nc - 1)   # tcls: [0,0,0,....,0,1,0,0]
             # tcls[:, :] += smoothing_factor / (model.nc - 1)  # 额外减去smoothing_factor / (model.nc - 1)，再统一加上
-            # # BCELoss
-            # aaa = BCEcls(pi[obj_mask][:, 5:], tcls).view(-1)
-            # a = max_ratio.reshape(-1, 1)
+            # # BCELossWithSigmoid
+            # aaa = BCELossWithSigmoid(pi[obj_mask][:, 5:], tcls).view(-1)
+            # a = mixup_ratio.reshape(-1, 1)
             # b = a.repeat(1, model.nc)
             # bbb = b.reshape(-1)
             # lcls += torch.matmul(aaa, bbb) #  / obj_nums
 
             # (4) CE with sigmoid  -> mAP 0.66  #  tcls是一个list，含有3个tensor，每个torch.size是308，形如 [2 1 14 14 14 6...]
             # lcls_ =  CEcls(pi[obj_mask][:, 5:], tcls.argmax(1))
-            # lcls += torch.matmul(lcls_, max_ratio)
+            # lcls += torch.matmul(lcls_, mixup_ratio)
 
             # (4.5) CE without sigmoid，将models.py里面的torch.sigmoid_(io[..., 4:])改为torch.sigmoid_(io[..., 4])  -> mAP 0.681
             # lcls_ =  CEcls(pi[obj_mask][:, 5:], tcls.argmax(1))
-            # lcls += torch.matmul(lcls_, max_ratio)
+            # lcls += torch.matmul(lcls_, mixup_ratio)
 
         # 3、计算 obj 损失
         tconf = obj_mask.float()
-        loss_obj = BCEobj(pi[obj_mask][..., 4], tconf[obj_mask])
+        loss_obj = BCELossWithSigmoid(pi[obj_mask][..., 4], tconf[obj_mask])
         if loss_obj.numel():  # 有anchor iou匹配的gt
-            loss_obj = torch.matmul(BCEobj(pi[obj_mask][..., 4], tconf[obj_mask]), max_ratio)  # / obj_nums
+            loss_obj = torch.matmul(BCELossWithSigmoid(pi[obj_mask][..., 4], tconf[obj_mask]), mixup_ratio)  # / obj_nums
         else:
             loss_obj = 0
-        loss_noobj = BCEobj(pi[noobj_mask][..., 4],  tconf[noobj_mask]).sum()   #  / obj_nums
-        loss_obj_all = loss_obj + loss_noobj
+        loss_noobj = BCELossWithSigmoid(pi[noobj_mask][..., 4],  tconf[noobj_mask]).sum()   #  / obj_nums
+        #loss_obj_all = loss_obj + 0.5*loss_noobj
+        loss_obj_all = loss_obj + 0.1 * loss_noobj
+        #loss_obj_all = loss_obj + loss_noobj
         lobj += loss_obj_all
 
     lbox /= bs
@@ -480,10 +511,10 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
 #     BCE_reduction_type = 'sum'  # Loss reduction (sum or mean)  # reduction：控制损失输出模式。设为"sum"表示对样本进行求损失和；设为"mean"表示对样本进行求损失的平均值；而设为"none"表示对样本逐个求损失，输出与输入的shape一样。
 #
 #     # Define criteria
-#     #BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.cuda.FloatTensor([1]), reduction=BCE_reduction_type)  # withLogits的含义：输入也就是pred还会经过sigmoid, 然后再和label算二元交叉熵损失
+#     #BCELossWithSigmoid = nn.BCEWithLogitsLoss(pos_weight=torch.cuda.FloatTensor([1]), reduction=BCE_reduction_type)  # withLogits的含义：输入也就是pred还会经过sigmoid, 然后再和label算二元交叉熵损失
 #                                                                                                           # clw note：loss = - [ ylog y^ + (1-y)log(1-y^) ]  其中y^是yolo_layer层输出的结果 tcls 经过 sigmoid 函数得到的，将输出结果转换到0~1之间，即该目标属于不同类别的概率值
 #     CEcls = nn.CrossEntropyLoss(reduction=BCE_reduction_type)
-#     BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.cuda.FloatTensor([1]), reduction=BCE_reduction_type)  # 可选参数 weight=model.class_weights   TODO: 不同类别的损失，设置不同的权重，个人感觉有点类似 focal loss
+#     BCELossWithSigmoid = nn.BCEWithLogitsLoss(pos_weight=torch.cuda.FloatTensor([1]), reduction=BCE_reduction_type)  # 可选参数 weight=model.class_weights   TODO: 不同类别的损失，设置不同的权重，个人感觉有点类似 focal loss
 #
 #     # Compute losses
 #     np, nt = 0, 0  # number grid points, # number of targets in 3 yolo_layers
@@ -540,13 +571,13 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
 #             if model.nc > 1:  # cls loss (only if multiple classes)
 #                 t = torch.zeros_like(ps[:, 5:])  # targets
 #                 t[range(nb), tcls[i]] = 1.0
-#                 #lcls += BCEcls(ps[:, 5:], t)  # BCE    # clw note: t的torch.size是 (308, 20), 形如 [0, 0, ...., 1, 0, 0]
+#                 #lcls += BCELossWithSigmoid(ps[:, 5:], t)  # BCE    # clw note: t的torch.size是 (308, 20), 形如 [0, 0, ...., 1, 0, 0]
 #                 lcls += CEcls(ps[:, 5:], tcls[i])  # TODO: 使用 CE    #  tcls是一个list，含有3个tensor，每个torch.size是308，形如 [2 1 14 14 14 6...]
 #
 #                 # Instance-class weighting (use with reduction='none')
 #                 # nt = t.sum(0) + 1  # number of targets per class
-#                 # lcls += (BCEcls(ps[:, 5:], t) / nt).mean() * nt.mean()  # v1
-#                 # lcls += (BCEcls(ps[:, 5:], t) / nt[tcls[i]].view(-1,1)).mean() * nt.mean()  # v2
+#                 # lcls += (BCELossWithSigmoid(ps[:, 5:], t) / nt).mean() * nt.mean()  # v1
+#                 # lcls += (BCELossWithSigmoid(ps[:, 5:], t) / nt[tcls[i]].view(-1,1)).mean() * nt.mean()  # v2
 #
 #             # Append targets to text file
 #             # with open('targets.txt', 'a') as file:
@@ -554,7 +585,7 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
 #
 #
 #         # 3、计算 obj 损失
-#         lobj += BCEobj(pi[..., 4], tobj)  # obj loss
+#         lobj += BCELossWithSigmoid(pi[..., 4], tobj)  # obj loss
 #
 #     lbox *= 3.54 # h['giou']  TODO
 #     lobj *= 64.3 # h['obj']

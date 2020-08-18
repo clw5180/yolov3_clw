@@ -262,7 +262,7 @@ def imdenormalize(norm_img, mean, std):
   img = norm_img * std + mean
   return img.astype(np.float32)
 
-def random_expand(src, max_ratio=2, keep_ratio=True):
+def random_expand(src, mixup_ratio=2, keep_ratio=True):
   """Random expand original image with borders, this is identical to placing
   the original image on a larger canvas.
 
@@ -270,7 +270,7 @@ def random_expand(src, max_ratio=2, keep_ratio=True):
   ----------
   src : mxnet.nd.NDArray
       The original image with HWC format.
-  max_ratio : int or float
+  mixup_ratio : int or float
       Maximum ratio of the output image on both direction(vertical and horizontal)
   fill : int or float or array-like
       The value(s) for padded borders. If `fill` is numerical type, RGB channels
@@ -287,15 +287,15 @@ def random_expand(src, max_ratio=2, keep_ratio=True):
       Tuple of (offset_x, offset_y, new_width, new_height)
 
   """
-  if max_ratio <= 1:
+  if mixup_ratio <= 1:
     return src, (0, 0, src.shape[1], src.shape[0])
 
   h, w, c = src.shape
-  ratio_x = random.uniform(1, max_ratio)
+  ratio_x = random.uniform(1, mixup_ratio)
   if keep_ratio:
     ratio_y = ratio_x
   else:
-    ratio_y = random.uniform(1, max_ratio)
+    ratio_y = random.uniform(1, mixup_ratio)
 
   oh, ow = int(h * ratio_y), int(w * ratio_x)
   off_y = random.randint(0, oh - h)

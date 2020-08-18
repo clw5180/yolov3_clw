@@ -98,8 +98,8 @@ if __name__ == '__main__':
     #parser.add_argument('--img-size', type=int, default=1024, help='resize to this size square and detect')
     parser.add_argument('--img-size', type=int, default=416, help='resize to this size square and detect')
     parser.add_argument('--epochs', type=int, default=50)
-    #parser.add_argument('--batch-size', type=int, default=64)  # effective bs = batch_size * accumulate = 16 * 4 = 64
-    parser.add_argument('--batch-size', type=int, default=32)  # effective bs = batch_size * accumulate = 16 * 4 = 64
+    parser.add_argument('--batch-size', type=int, default=64)  # effective bs = batch_size * accumulate = 16 * 4 = 64
+    #parser.add_argument('--batch-size', type=int, default=16)  # effective bs = batch_size * accumulate = 16 * 4 = 64
     #parser.add_argument('--batch-size', type=int, default=8)
     #parser.add_argument('--batch-size', type=int, default=4)
     parser.add_argument('--multi-scale', action='store_true', help='rectangular training')
@@ -246,6 +246,8 @@ if __name__ == '__main__':
         model.yolo_layers = model.module.yolo_layers  # move yolo layer indices to top level
     ######
     model.nc = nc
+    nbs = 64
+    accumulate = max(round(nbs / batch_size), 1)  # accumulate loss before optimizing
 
     multi_scale = opt.multi_scale
     if multi_scale:
@@ -350,10 +352,10 @@ if __name__ == '__main__':
                 loss.backward()
 
             # (4) 优化器：更新参数、梯度清零
-            # ni = i + nb * epoch  # number integrated batches (since train start)
-            # if ni % accumulate == 0:  # Accumulate gradient for x batches before optimizing
-            optimizer.step()
-            optimizer.zero_grad()
+            ni = i + nb * epoch  # number integrated batches (since train start)
+            if ni % accumulate == 0:  # Accumulate gradient for x batches before optimizing
+                optimizer.step()
+                optimizer.zero_grad()
 
             # Print batch results
             mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
