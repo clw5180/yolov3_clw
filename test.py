@@ -74,7 +74,7 @@ def test(cfg,
         # Disable gradients
         with torch.no_grad():
             # (1) Run model
-            output = model(img_tensor)[0]   # (x1, y1, x2, y2, obj_conf, class_conf, class_pred)
+            output = model(img_tensor)   # (x1, y1, x2, y2, obj_conf, class_conf, class_pred)
 
             # (2) NMS
             nms_output = non_max_suppression(output, conf_thres, nms_thres)

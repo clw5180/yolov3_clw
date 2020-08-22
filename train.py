@@ -397,7 +397,7 @@ if __name__ == '__main__':
                       opt.data,
                       batch_size=batch_size,
                       img_size=img_size,
-                      conf_thres=0.01,
+                      conf_thres=0.1,
                       iou_thres=0.5,
                       nms_thres=0.5,
                       src_txt_path=valid_txt_path,

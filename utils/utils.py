@@ -325,6 +325,24 @@ def build_targets(model, bs, targets):   # build mask Matrix according to batchs
     return obj_mask_all, noobj_mask_all, tx_all, ty_all, tw_all, th_all, tcls_all, target_all, mixup_ratios_all
 
 
+class MyFocalLoss(nn.Module):
+    def __init__(self, gamma=2.0, alpha=0.25, reduction="mean"):  # gamma: 控制难易样本，容易样本pt更接近1，则(1-pt)更接近0，平方则loss更小，降低容易样本起的作用；
+                                                                 # alpha：控制政府样本；label=1时alpha=0.75, label=-1时alpha=0.25，降低负样本起的作用；
+        super(MyFocalLoss, self).__init__()
+        self.__gamma = gamma
+        self.__alpha = alpha
+        self.__loss = nn.BCEWithLogitsLoss(reduction=reduction)
+
+    def forward(self, input, target):
+        pos_mask = (target == 1)
+        neg_mask = (target == 0)
+        #loss_pos = (1 - self.__alpha) * (torch.pow(torch.abs(target[pos_mask] - torch.sigmoid(input[pos_mask])), self.__gamma) *  self.__loss(input=input[pos_mask], target=target[pos_mask])).sum()
+        #loss_neg = self.__alpha * (torch.pow(torch.abs(target[neg_mask] - torch.sigmoid(input[neg_mask])), self.__gamma) *  self.__loss(input=input[neg_mask], target=target[neg_mask])).sum()
+        loss_pos = (1 - self.__alpha) * (torch.pow(torch.abs(target - torch.sigmoid(input)), self.__gamma) *  self.__loss(input=input, target=target)) * pos_mask.float()  ## TODO：重复计算
+        loss_neg = self.__alpha * (torch.pow(torch.abs(target - torch.sigmoid(input)), self.__gamma) *  self.__loss(input=input, target=target)) * neg_mask.float()
+        loss = loss_pos + loss_neg
+        return loss
+
 ### new version
 def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个list包含3个tensor，维度(bs,3,13,13,25), (bs,3,26,26,25)....
                                              # p_box: 一个list包含3个tensor，维度(bs,3,13,13,4), (bs,3,26,26,4)....   targets: (n, 6)
@@ -339,13 +357,13 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
     #loss_reduction_type = 'sum'  # Loss reduction (sum or mean)  # reduction：控制损失输出模式。设为"sum"表示对样本进行求损失和；设为"mean"表示对样本进行求损失的平均值；而设为"none"表示对样本逐个求损失，输出与输入的shape一样。
     loss_reduction_type = 'none'
     #LabelSmooth = LabelSmoothing(reduction=loss_reduction_type)
-    CEcls = nn.CrossEntropyLoss(reduction=loss_reduction_type)
+    CELoss = nn.CrossEntropyLoss(reduction=loss_reduction_type)
     BCELossWithSigmoid = nn.BCEWithLogitsLoss(reduction=loss_reduction_type)  # withLogits的含义：输入也就是pred还会经过sigmoid, 然后再和label算二元交叉熵损失  loss = - [ ylog y^ + (1-y)log(1-y^) ]
                                                                    # 其中y^是yolo_layer层输出的结果 tcls 经过 sigmoid 函数得到的，将输出结果转换到0~1之间，即该目标属于不同类别的概率值
-                                                                   # 可选参数 weight=model.class_weights   TODO: 不同类别的损失，设置不同的权重，个人感觉有点类似 focal loss
-    BCELoss = nn.BCELoss(reduction=loss_reduction_type)
+                                                                   # 可选参数 weight=model.class_weights ,不同类别的损失，可以设置不同的权重
     MSELoss = nn.MSELoss(reduction=loss_reduction_type)
     SmoothL1Loss = nn.SmoothL1Loss(reduction=loss_reduction_type)
+    FocalLoss = MyFocalLoss(gamma=2, alpha=0.25, reduction="none")
 
     # Compute losses
     for i, pi in enumerate(p):  # layer index: 0,1,2   layer predictions: (bs,3,13,13,25), (bs,3,26,26,25), (bs,3,52,52,25)
@@ -399,6 +417,9 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
             # loss_y = torch.matmul(BCELossWithSigmoid(py, ty), mixup_ratio) # / obj_nums
             # loss_w = torch.matmul(SmoothL1Loss(pw, tw), mixup_ratio) # / obj_nums
             # loss_h = torch.matmul(SmoothL1Loss(ph, th), mixup_ratio) # / obj_nums
+            #### wh改为Smooth L1 ==> mAP 0.694
+            # loss_w = torch.matmul(SmoothL1Loss(pw, tw), mixup_ratio) # / obj_nums
+            # loss_h = torch.matmul(SmoothL1Loss(ph, th), mixup_ratio) # / obj_nums
             ####
 
             #### xy改为BCE  ==> mAP 0.701, P 0.338 P更高
@@ -410,21 +431,12 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
             loss_y = torch.matmul(BCELossWithSigmoid(py, ty), mixup_ratio) # / obj_nums
             loss_w = torch.matmul(MSELoss(pw, tw), mixup_ratio) # / obj_nums
             loss_h = torch.matmul(MSELoss(ph, th), mixup_ratio) # / obj_nums
-            ####
-
-            #### wh改为Smooth L1 ==> mAP 0.694
-            # px = torch.sigmoid(pi[obj_mask][:, 0])
-            # py = torch.sigmoid(pi[obj_mask][:, 1])
-            # pw = pi[obj_mask][:, 2]
-            # ph = pi[obj_mask][:, 3]
-            # loss_x = torch.matmul(MSELoss(px, tx), mixup_ratio) # / obj_nums  # obj_nums = len(tx)
-            # loss_y = torch.matmul(MSELoss(py, ty), mixup_ratio) # / obj_nums
-            # loss_w = torch.matmul(SmoothL1Loss(pw, tw), mixup_ratio) # / obj_nums
-            # loss_h = torch.matmul(SmoothL1Loss(ph, th), mixup_ratio) # / obj_nums
-            ####
-
             lbox += 2.5 * (loss_x + loss_y + loss_w + loss_h)
+            #lbox += (loss_x + loss_y + loss_w + loss_h)
+            ####
 
+
+            ####
             # 2、计算分类损失，这里只针对多类别，如果只有1个类那么只需要计算 obj 损失
             ### (1) normal BCE
             # if model.nc > 1:  # cls loss (only if multiple classes)
@@ -441,14 +453,14 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
             # b = a.repeat(1, model.nc)
             # c = b.reshape(-1)
             # lcls += torch.matmul(lcls_, c) #  / obj_nums
-            # ####
+
 
             # (3) BCE + wrong mixup_ratio -> mAP 0.696
             # aaa = BCELossWithSigmoid(pi[obj_mask][:, 5:], tcls).view(-1)
             # bbb = mixup_ratio.repeat(20)
             # lcls += torch.matmul(aaa, bbb) #  / obj_nums
 
-            # (3.5) BCE + right mixup_ratio -> mAP 0.7，P=0.33
+            # (3.5) BCE + right mixup_ratio -> mAP 0.7，P=0.33 ;  (best)
             aaa = BCELossWithSigmoid(pi[obj_mask][:, 5:], tcls).view(-1)
             a = mixup_ratio.reshape(-1, 1)
             b = a.repeat(1, model.nc)
@@ -470,25 +482,35 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
             # bbb = b.reshape(-1)
             # lcls += torch.matmul(aaa, bbb) #  / obj_nums
 
-            # (4) CE with sigmoid  -> mAP 0.66  #  tcls是一个list，含有3个tensor，每个torch.size是308，形如 [2 1 14 14 14 6...]
-            # lcls_ =  CEcls(pi[obj_mask][:, 5:], tcls.argmax(1))
+            # (4) CE, inference with sigmoid  -> mAP 0.66  #  tcls是一个list，含有3个tensor，每个torch.size是308，形如 [2 1 14 14 14 6...]
+            #     CE, inference without sigmoid，将models.py里面的torch.sigmoid_(io[..., 4:])改为torch.sigmoid_(io[..., 4])  -> mAP 0.681
+            # lcls_ =  CELoss(pi[obj_mask][:, 5:], tcls.argmax(1))
             # lcls += torch.matmul(lcls_, mixup_ratio)
 
-            # (4.5) CE without sigmoid，将models.py里面的torch.sigmoid_(io[..., 4:])改为torch.sigmoid_(io[..., 4])  -> mAP 0.681
-            # lcls_ =  CEcls(pi[obj_mask][:, 5:], tcls.argmax(1))
-            # lcls += torch.matmul(lcls_, mixup_ratio)
 
-        # 3、计算 obj 损失
+        #### 3、计算 obj 损失
+        # BCELoss
+        # tconf = obj_mask.float()
+        # loss_obj = BCELossWithSigmoid(pi[obj_mask][..., 4], tconf[obj_mask])
+        # if loss_obj.numel():  # 有anchor iou匹配的gt
+        #     loss_obj = torch.matmul(loss_obj, mixup_ratio)  # / obj_nums
+        # else:
+        #     loss_obj = 0
+        # loss_noobj = BCELossWithSigmoid(pi[noobj_mask][..., 4],  tconf[noobj_mask]).sum()   #  / obj_nums
+        # #loss_obj_all = loss_obj + 0.5*loss_noobj
+        # loss_obj_all = loss_obj + loss_noobj
+        # lobj += loss_obj_all
+
+        # FocalLoss
         tconf = obj_mask.float()
-        loss_obj = BCELossWithSigmoid(pi[obj_mask][..., 4], tconf[obj_mask])
+        loss_obj = FocalLoss(pi[obj_mask][..., 4], tconf[obj_mask])
         if loss_obj.numel():  # 有anchor iou匹配的gt
-            loss_obj = torch.matmul(BCELossWithSigmoid(pi[obj_mask][..., 4], tconf[obj_mask]), mixup_ratio)  # / obj_nums
+            loss_obj = torch.matmul(loss_obj, mixup_ratio)  # / obj_nums
         else:
             loss_obj = 0
-        loss_noobj = BCELossWithSigmoid(pi[noobj_mask][..., 4],  tconf[noobj_mask]).sum()   #  / obj_nums
+        loss_noobj = FocalLoss(pi[noobj_mask][..., 4],  tconf[noobj_mask]).sum()   #  / obj_nums
         #loss_obj_all = loss_obj + 0.5*loss_noobj
-        loss_obj_all = loss_obj + 0.1 * loss_noobj
-        #loss_obj_all = loss_obj + loss_noobj
+        loss_obj_all = loss_obj + loss_noobj
         lobj += loss_obj_all
 
     lbox /= bs
@@ -498,114 +520,6 @@ def compute_loss(p, p_box, targets, model, img_size):  # p:predictions，一个l
     loss = lbox + lobj + lcls
     return loss, torch.cat((lbox, lobj, lcls, loss)).detach()
 ###
-
-
-
-# def compute_loss(p, targets, model, giou_flag=True):  # p:predictions，一个list包含3个tensor，维度(1,3,13,13,25), (1,3,26,26,25)....
-#     #ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor  # clw note: 暂时不支持cpu，太慢
-#
-#     lcls, lbox, lobj = torch.cuda.FloatTensor([0]), torch.cuda.FloatTensor([0]), torch.cuda.FloatTensor([0])
-#     tcls, tbox, indices, anchor_vec = build_targets(model, targets)
-#     #h = model.hyp  # hyperparameters
-#
-#     BCE_reduction_type = 'sum'  # Loss reduction (sum or mean)  # reduction：控制损失输出模式。设为"sum"表示对样本进行求损失和；设为"mean"表示对样本进行求损失的平均值；而设为"none"表示对样本逐个求损失，输出与输入的shape一样。
-#
-#     # Define criteria
-#     #BCELossWithSigmoid = nn.BCEWithLogitsLoss(pos_weight=torch.cuda.FloatTensor([1]), reduction=BCE_reduction_type)  # withLogits的含义：输入也就是pred还会经过sigmoid, 然后再和label算二元交叉熵损失
-#                                                                                                           # clw note：loss = - [ ylog y^ + (1-y)log(1-y^) ]  其中y^是yolo_layer层输出的结果 tcls 经过 sigmoid 函数得到的，将输出结果转换到0~1之间，即该目标属于不同类别的概率值
-#     CEcls = nn.CrossEntropyLoss(reduction=BCE_reduction_type)
-#     BCELossWithSigmoid = nn.BCEWithLogitsLoss(pos_weight=torch.cuda.FloatTensor([1]), reduction=BCE_reduction_type)  # 可选参数 weight=model.class_weights   TODO: 不同类别的损失，设置不同的权重，个人感觉有点类似 focal loss
-#
-#     # Compute losses
-#     np, nt = 0, 0  # number grid points, # number of targets in 3 yolo_layers
-#     for i, pi in enumerate(p):  # layer index: 0,1,2   layer predictions: (1,3,13,13,25), (1,3,26,26,25), (1,3,52,52,25)
-#         b, a, gj, gi = indices[i]  # target image idx, anchor idx, gt的x_ctr和y_ctr所在cell左上角坐标，整数
-#         tobj = torch.zeros_like(pi[..., 0])  # target obj  (1,3,13,13)
-#         np += tobj.numel()  # 507=1*3*13*13
-#
-#         # Compute losses
-#         nb = len(b)   # or b.shape[0] , number of targets in one yolo_layer
-#         if nb:
-#             nt += nb  # ng 是把 3个layer的 nb 加在一起,
-#             ps = pi[b, a, gj, gi]  # prediction subset corresponding to targets； 把gt所在的那个grid cell的预测结果拿出来
-#             # ps[:, 2:4] = torch.sigmoid(ps[:, 2:4])  # wh power loss (uncomment)
-#
-# 			#########
-#             # 1、计算位置损失，这里是GIoU
-#             # pxy = torch.sigmoid(ps[:, 0:2])  # pxy = pxy * s - (s - 1) / 2,  s = 1.5  (scale_xy)
-#             # pwh = torch.exp(ps[:, 2:4]).clamp(max=1E3) * anchor_vec[i]  # 根据 tx，ty，tw，th 求出 实际框相对于当前grid的偏移，以及wh的比例系数
-#             # pbox = torch.cat((pxy, pwh), 1)  # predicted box
-#             # giou = bbox_iou(pbox.t(), tbox[i], x1y1x2y2=False, GIoU=True)  # giou computation
-#             # lbox += (1.0 - giou).sum() if BCE_reduction_type == 'sum' else (1.0 - giou).mean()  # giou loss
-#             # tobj[b, a, gj, gi] = giou.detach().clamp(0).type(tobj.dtype) if giou_flag else 1.0
-#             #########
-#
-#             #### clw modify  xywh 用 MSE平方差损失
-#             # # multi_gpu = type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)  # clw note: 多卡
-#             # if multi_gpu:
-#             #     nums_of_grid = model.module.module_list[model.yolo_layers[i]].ng  # [13, 13]
-#             # else:
-#             #     nums_of_grid = model.module_list[model.yolo_layers[i]].ng  # [13, 13]
-#             pbox = torch.cat((torch.sigmoid(ps[:, 0:2]), ps[:, 2:4]), 1)  # clw note：用于计算损失的是σ(tx),σ(ty),和 tw 和 th (因为gt映射到tx^时，sigmoid反函数不好求，所以不用tx和ty)
-#             txy_gt = tbox[i][:, 0:2]   # bx - cx
-#             twh_gt = torch.log(tbox[i][:, 2:4] / anchor_vec[i])
-#             gtbox = torch.cat((txy_gt, twh_gt), 1)
-#             lbox += torch.sum( (pbox - gtbox) * (pbox - gtbox) )  if BCE_reduction_type == 'sum' else  ((pbox - gtbox) * (pbox - gtbox)).mean()  # TODO: / stride
-#             tobj[b, a, gj, gi] = 1.0
-#             ###
-#
-#
-#             '''  # old version
-#             # GIoU
-# 			tobj[b, a, gj, gi] = 1.0  # obj
-#             pxy = torch.sigmoid(ps[:, 0:2])  # pxy = pxy * s - (s - 1) / 2,  s = 1.5  (scale_xy)
-#             #pbox = torch.cat((pxy, torch.exp(ps[:, 2:4]).clamp(max=1E4) * anchor_vec[i]), 1)  # predicted box
-#             pbox = torch.cat((pxy, torch.exp(ps[:, 2:4]).clamp(max=1E3) * anchor_vec[i]), 1)  # predicted box
-#             # giou = bbox_iou(pbox.t(), tbox[i], x1y1x2y2=False, GIoU=True)  # giou computation
-#             # lbox += (1.0 - giou).mean()  # giou loss
-#             giou = 1.0 - bbox_iou(pbox.t(), tbox[i], x1y1x2y2=False, GIoU=True)  # giou computation
-#             lbox += giou.sum() if BCE_reduction_type == 'sum' else giou.mean()  # giou loss
-# 			'''
-#
-#             # 2、计算分类损失，这里只针对多类别，如果只有1个类那么只需要计算 obj 损失
-#             if model.nc > 1:  # cls loss (only if multiple classes)
-#                 t = torch.zeros_like(ps[:, 5:])  # targets
-#                 t[range(nb), tcls[i]] = 1.0
-#                 #lcls += BCELossWithSigmoid(ps[:, 5:], t)  # BCE    # clw note: t的torch.size是 (308, 20), 形如 [0, 0, ...., 1, 0, 0]
-#                 lcls += CEcls(ps[:, 5:], tcls[i])  # TODO: 使用 CE    #  tcls是一个list，含有3个tensor，每个torch.size是308，形如 [2 1 14 14 14 6...]
-#
-#                 # Instance-class weighting (use with reduction='none')
-#                 # nt = t.sum(0) + 1  # number of targets per class
-#                 # lcls += (BCELossWithSigmoid(ps[:, 5:], t) / nt).mean() * nt.mean()  # v1
-#                 # lcls += (BCELossWithSigmoid(ps[:, 5:], t) / nt[tcls[i]].view(-1,1)).mean() * nt.mean()  # v2
-#
-#             # Append targets to text file
-#             # with open('targets.txt', 'a') as file:
-#             #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
-#
-#
-#         # 3、计算 obj 损失
-#         lobj += BCELossWithSigmoid(pi[..., 4], tobj)  # obj loss
-#
-#     lbox *= 3.54 # h['giou']  TODO
-#     lobj *= 64.3 # h['obj']
-#     lcls *= 37.4  # h['cls']
-#     if BCE_reduction_type == 'sum':
-#         bs = tobj.shape[0]  # batch size
-#         loss_gain = 3  # loss gain
-#         #lobj *= loss_gain / bs   # TODO: 需要写成下面这样 3 / (6300 * bs) * 2 = 3e-5，否则损失无穷大
-#         lobj *= 3 / (6300 * bs) * 2
-#         if nt:  # 如果图片内有 target 也就是 gt，说明不是负样本，因此要计算 lcls 和 lbox
-#             lcls *= loss_gain / nt / model.nc
-#             lbox *= loss_gain / nt
-#
-#     loss = lbox + lobj + lcls
-#     return loss, torch.cat((lbox, lobj, lcls, loss)).detach()
-
-
-
-######################################################################
-
 
 
 def select_device(device):  # 暂时不支持 CPU

@@ -69,11 +69,11 @@ class Darknet(nn.Module):
             p, p_box = list(zip(*output))
             return p, p_box  # clw note: TODO
         else:
-            io, p = list(zip(*output))  # output: list，包含三个tuple, 每个tuple有两个元素，0的维度是(1, 507, 25), 1的维度是(1, 3, 13, 13, 25)
-                                        # io: inference output, 也就是yolo_layer的输出经过了 sigmoid 和 exp 后加上当前cell相对于feature map左上角的坐标，得到的feature map的真实坐标，然后*= self.stride得到映射到原图的真实坐标
-                                        # p: training output， 也就是yolo_layer最原始的输出 tx, ty, tw, th, 也就是在当前cell内的坐标偏移
-            return torch.cat(io, 1), p
-
+            # io, p = list(zip(*output))  # output: list，包含三个tuple, 每个tuple有两个元素，0的维度是(1, 507, 25), 1的维度是(1, 3, 13, 13, 25)
+            #                             # io: inference output, 也就是yolo_layer的输出经过了 sigmoid 和 exp 后加上当前cell相对于feature map左上角的坐标，得到的feature map的真实坐标，然后*= self.stride得到映射到原图的真实坐标
+            #                             # p: training output， 也就是yolo_layer最原始的输出 tx, ty, tw, th, 也就是在当前cell内的坐标偏移
+            #
+            return torch.cat(output, 1)
 
 def create_modules(module_defs):
     # Constructs module list of layer blocks from module configuration in module_defs
@@ -208,17 +208,25 @@ class YOLOLayer(nn.Module):
         io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh  # wh yolo method
         io[..., :4] *= self.stride
         if self.training:
-            #return p   # clw note: old version
-            return p, io[..., :4]
+            return p, io[..., :4]  # clw note: old version only return p
 
         else:  # inference
-            torch.sigmoid_(io[..., 4:])    # clw note TODO: BCELossWithSigmoid may need, but CELoss don't need ?
-            #torch.sigmoid_(io[..., 4])
+            ### BCE  实测BCE优于CE，个人猜测是CE的不同类之间存在耦合/抗争关系，而实际分类问题，可能会有两个类比较相近，
+            #        比如有一只比较像狗的猫，网络输出猫的概率是0.9，狗的概率输出0.85，如果是BCELoss，只计算0.9和1的误差；而
+            #        如果用CELoss，经过softmax之后，猫的概率被中和到0.5+，狗的概率是0.4+，这样计算的是0.5和1的误差，loss就会很大，
+            #        反向传播就会对网络有更大影响，这显然是不符合实际情况的；
+            torch.sigmoid_(io[..., 4:])    # clw note
+
+            ### CE
+            #torch.sigmoid_(io[..., 4])  # ，如果不作任何变换， 对于 io[..., 5:]， 最大见到过1.16，最小基本没有比-1还小的
+            #print('clw: io:', io[0,0,0,0,5:])
+            #io[..., 5:] = F.softmax(io[..., 5:], -1)  # 经过softmax后彼此差异变小，在nms里面conf基本上都会比不经过softmax低，
+                                                       # 实测第3个epoch，经过softmax的mAP0.42+，不经过的0.44+；
 
             if self.nc == 1:
                 io[..., 5] = 1  # single-class model https://github.com/ultralytics/yolov3/issues/235
 
-            return io.view(bs, -1, 5 + self.nc), p  # io reshape from [1, 3, 13, 13, 85] to [1, 507, 85]
+            return io.view(bs, -1, 5 + self.nc)  # io reshape from [1, 3, 13, 13, 85] to [1, 507, 85]
 
 
 def get_yolo_layers(model):

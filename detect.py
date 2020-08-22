@@ -49,7 +49,7 @@ def detect():
         pbar.set_description("Already Processed %d image: " % (i+1))
         # print('clw: Already Processed %d image' % (i+1))
         img_tensor = img_tensor.to(device)   # (bs, 3, 416, 416)
-        output = model(img_tensor)[0]   # (x1, y1, x2, y2, obj_conf, class_conf, class_pred)
+        output = model(img_tensor)   # (x1, y1, x2, y2, obj_conf, class_conf, class_pred)
 
         # NMS
         #nms_output = non_max_suppression(output, opt.conf_thres, opt.nms_thres)
