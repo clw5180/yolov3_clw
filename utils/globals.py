@@ -15,4 +15,4 @@ log_file_path = os.path.join(log_folder , 'log_{}.txt'.format(time.strftime("%Y%
 ###
 
 ALREADY_SHOWED_SAMPLE = False
-DATA_PATH = '/home/user/dataset/voc2007'
+DATA_PATH = '/home/clwclw/dataset/voc2007'

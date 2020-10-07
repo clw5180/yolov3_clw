@@ -34,7 +34,7 @@ def test(cfg,
 
     # 1、加载网络
     if model is None:
-        device = select_device('0, 1')
+        device = select_device('0')
         model = Darknet(cfg)
         if weights.endswith('.pt'):      # TODO: .weights权重格式
             model.load_state_dict(torch.load(weights, map_location=device)['model']) # 20200704_50epoch_modify_noobj   # TODO：map_location=device ？
@@ -188,7 +188,7 @@ if __name__ == '__main__':
     #parser.add_argument('--cfg', type=str, default='cfg/yolov3-spp.cfg', help='xxx.cfg file path')
     parser.add_argument('--data', type=str, default='cfg/voc.data', help='xxx.data file path')
     parser.add_argument('--batch-size', type=int, default=64)
-    parser.add_argument('--device', type=str, default='0,1', help='device id (i.e. 0 or 0,1,2,3) ') # 默认单卡
+    parser.add_argument('--device', type=str, default='0', help='device id (i.e. 0 or 0,1,2,3) ') # 默认单卡
     parser.add_argument('--src-txt-path', type=str, default='./valid.txt', help='saved img_file_paths list')
     parser.add_argument('--weights', type=str, default='weights/last.pt', help='path to weights file')
     #parser.add_argument('--weights', type=str, default='weights/20200706_multiscale/last.pt', help='path to weights file')
@@ -196,7 +196,8 @@ if __name__ == '__main__':
     #parser.add_argument('--weights', type=str, default='weights/yolov3.pt', help='path to weights file')
     parser.add_argument('--img-size', type=int, default=416, help='resize to this size square and detect')
     #parser.add_argument('--img-size', type=int, default=1024, help='resize to this size square and detect')
-    parser.add_argument('--conf-thres', type=float, default=0.1, help='object confidence threshold')
+    #parser.add_argument('--conf-thres', type=float, default=0.1, help='object confidence threshold')
+    parser.add_argument('--conf-thres', type=float, default=0.001, help='object confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.5, help='iou threshold for compute mAP')
     parser.add_argument('--nms-thres', type=float, default=0.5, help='iou threshold for non-maximum suppression')
 

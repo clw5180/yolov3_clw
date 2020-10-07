@@ -5,9 +5,13 @@
 *.weights
 *.conv.*
 *.jpg
+*.JPG
 *.png
+*.jpeg
 *.bmp
 *.idea
+log_*
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

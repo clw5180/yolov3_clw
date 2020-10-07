@@ -13,6 +13,22 @@
 #  (5) batchsize
 #  (6) hyp['iou_t']  （ 在 build_targets()内  ）
 #  (7) 数据增强方式（LetterBox，Resize）
+
+# 腾讯优图的Yolov3用的和coco一样的anchor，32*range(10,19)也就是320~608多尺度训练，在544尺寸下测试可以达到mAP 79.6%；Yolov2达到mAP77.6%；
+# Yolov2论文里给出的416尺寸下测试是75.4%，加多尺度训练是76.8%，然后再提高到544尺寸下测试是78.6%；所以个人感觉Yolov3在416尺寸下应该能达到接近77.4的水平；
+# 腾讯优图的anchor策略有一点不同：对于某个yololayer，只要有某个anchor和gt的iou大于0.5，那么其他的anchor即使iou很小，也不作为负样本；
+#  mask = (iou_gt_pred > self.thresh).sum(0) >= 1
+#  conf_neg_mask[b][mask.view_as(conf_neg_mask[b])] = 0
+
+# C语言原版yolov3中，使用的一些数据增强包括：
+#（1）jitter=.3  ，利用数据抖动产生更多数据，属于TTA（Test Time Augmentation）
+#（2）hsv：saturation = 1.5 ， exposure = 1.5 ，hue=.1
+#（3）：learning_rate=0.001
+# burn_in=1000
+# max_batches = 50200
+# policy=steps
+# steps=40000,45000
+
 ######
 
 import torch
@@ -83,7 +99,7 @@ if __name__ == '__main__':
     #parser.add_argument('--cfg', type=str, default='cfg/wheat_yolov3-spp.cfg', help='xxx.cfg file path')
     parser.add_argument('--data', type=str, default='cfg/voc.data', help='xxx.data file path')
     #parser.add_argument('--data', type=str, default='cfg/wheat.data', help='xxx.data file path')
-    parser.add_argument('--device', default='0,1', help="device id (i.e. 0 or 0,1,2,3) or '' ") # 如果为空，则默认使用所有当前可用的显卡
+    parser.add_argument('--device', default='0', help="device id (i.e. 0 or 0,1,2,3) or '' ") # 如果为空，则默认使用所有当前可用的显卡
     #parser.add_argument('--weights', type=str, default='weights/cspdarknet53-panet-spp.weights', help='path to weights file')
     # parser.add_argument('--weights', type=str, default='weights/resnet18.pth', help='path to weights file')
     # parser.add_argument('--weights', type=str, default='weights/resnet50.pth', help='path to weights file')
@@ -97,8 +113,8 @@ if __name__ == '__main__':
     #parser.add_argument('--weights', type=str, default='', help='path to weights file')
     #parser.add_argument('--img-size', type=int, default=1024, help='resize to this size square and detect')
     parser.add_argument('--img-size', type=int, default=416, help='resize to this size square and detect')
-    parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--batch-size', type=int, default=64)  # effective bs = batch_size * accumulate = 16 * 4 = 64
+    parser.add_argument('--epochs', type=int, default=200)
+    parser.add_argument('--batch-size', type=int, default=32)  # effective bs = batch_size * accumulate = 16 * 4 = 64
     #parser.add_argument('--batch-size', type=int, default=16)  # effective bs = batch_size * accumulate = 16 * 4 = 64
     #parser.add_argument('--batch-size', type=int, default=8)
     #parser.add_argument('--batch-size', type=int, default=4)
@@ -187,7 +203,7 @@ if __name__ == '__main__':
     train_dataset = VocDataset(train_txt_path, img_size, with_label=True, is_training=True)
     dataloader = DataLoader(train_dataset,
                             batch_size=batch_size,
-                            shuffle=True,  # TODO: True
+                            shuffle=True,
                             num_workers=8, # TODO
                             collate_fn=train_dataset.train_collate_fn,
                             pin_memory=True)
@@ -226,8 +242,11 @@ if __name__ == '__main__':
     scheduler = custom_lr_scheduler.CosineDecayLR(optimizer,
                                                 T_max=total_epochs * len(dataloader),
                                                 lr_init=lr0,
-                                                lr_min=lr0 * 1e-2,
-                                                warmup=2 * len(dataloader))
+                                                lr_min=lr0 * 1e-3,
+                                                warmup=5 * len(dataloader))
+    ### 阶梯学习率2：参考腾讯优图yolov3
+    # lr_steps: [400,700,900,1000, 40000,45000]
+    # lr_rates: [0.0001,0.0002,0.0005,0.001, 0.0001,0.00001]
 
 
     ###### apex need ######
@@ -321,9 +340,9 @@ if __name__ == '__main__':
             ######
             # Multi-Scale training
             if multi_scale:
-                if ni  % 1 == 0:  #  adjust (67% - 150%) every 1 or 10 batches
-                    img_size = random.randrange(10, 19 + 1) * 32  # 320~608, 间隔32
-                    #img_size = random.randrange(24, 32 + 1) * 32
+                if ni  % 10 == 0:  #  adjust (67% - 150%) every 1 or 10 batches
+                    img_size = random.randrange(10, 19) * 32  # 320~608, 间隔32
+                    #img_size = random.randrange(24, 32) * 32
                 ##ns = [math.ceil(x * sf / 32.) * 32 for x in imgs.shape[2:]]  # new shape (stretched to 32-multiple)
                 img_tensor = F.interpolate(img_tensor, size=(img_size, img_size), mode='bilinear', align_corners=False)
 
@@ -391,8 +410,8 @@ if __name__ == '__main__':
         # scheduler.step()
 
         # compute mAP
-        #if epoch >= 3 and epoch % 5 == 0:  # clw note: avoid nms cause too much time for epoch1 and epoch2
-        if epoch >= 3:  # clw note: avoid nms cause too much time for epoch1 and epoch2
+        if epoch >= 3 and (epoch+1) % 5 == 0:  # clw note: avoid nms cause too much time for epoch1 and epoch2
+        #if epoch >= 3:  # clw note: avoid nms cause too much time for epoch1 and epoch2
             results, maps = test.test(cfg,
                       opt.data,
                       batch_size=batch_size,

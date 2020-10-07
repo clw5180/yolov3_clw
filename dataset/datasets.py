@@ -84,7 +84,7 @@ class VocDataset(Dataset):   # for training/testing
                 # Mixup
                 # （1）原始的labels扩充一列，为该图的每一个box存mixup_ratio，便于后续计算损失
                 label = np.insert(label, 5, values=1, axis=1)
-                if random.random() < 0.5:
+                if random.random() < 0:  # TODO
                     #mixup_ratio = np.random.beta(0.3, 0.3) # alpha = beta = 0.3;  or try fixed value: mixup_ratio = 0.5
                     mixup_ratio = np.random.beta(1.5, 1.5) # alpha = beta = 0.3;  or try fixed value: mixup_ratio = 0.5
                     label[:, 5] = mixup_ratio
